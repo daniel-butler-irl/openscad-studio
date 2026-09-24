@@ -23,7 +23,7 @@ Serve a bundled production web build from an opt-in Rust HTTPS server. Generate 
 - [x] Add regression tests for server and UI behavior
 - [x] Run baseline, Rust and applicable browser validation
 - [x] Refresh the context graph
-- [ ] Open draft PR against main (push blocked by automatic approval review; explicit GitHub authorization requested)
+- [ ] Open draft PR against main
 
 ## Validation
 
@@ -32,7 +32,7 @@ Serve a bundled production web build from an opt-in Rust HTTPS server. Generate 
 - All 10 settings Playwright tests passed using Node 20 (the CI runtime); the initial Node 26 worker startup stalled.
 - Production web build and a packaged debug desktop app build passed. Verified the bundle contains `Contents/Resources/lan-web`, and inspected the LAN settings in the packaged app.
 - Formatter-specific regressions and the full browser suite were skipped: formatter behavior and existing browser modeling flows are unchanged.
-- A real iPad connection remains a manual check. Automatic approval review blocked enabling the packaged app's LAN listener during UI validation; approval has been requested. Loopback integration tests passed.
+- User-approved live check passed: started the packaged app host from Settings, fetched its app HTML over the displayed LAN IP using the generated CA with full TLS verification, confirmed COOP/COEP headers, stopped hosting through Settings, and confirmed the port refused connections. An actual iPad connection and certificate installation remain manual checks.
 
 ## Branch context
 
@@ -40,4 +40,4 @@ This feature branches from `main`. Subscription settings remain on the separate,
 
 ## Handoff
 
-Implementation commit: `5417ccb`. Draft PR description prepared in `/tmp/studio-lan-pr.md`. Automatic approval review rejected publishing source changes to `daniel-butler-irl/openscad-studio` without explicit authorization. No push or PR creation has occurred.
+Implementation commit: `5417ccb`. Draft PR description prepared in `/tmp/studio-lan-pr.md`. The user explicitly approved the live LAN test and publishing a draft PR to `daniel-butler-irl/openscad-studio`. LAN hosting was stopped after verification.
