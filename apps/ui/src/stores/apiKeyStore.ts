@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import type { AiConnectionProvider, ApiKeyProvider } from '../platform/types';
 import { DEFAULT_MODEL_IDS, getPreferredDefaultModel } from '../utils/aiModels';
 
 // ============================================================================
@@ -15,10 +16,10 @@ const STORAGE_KEYS = {
   modelSelection: 'openscad_studio_ai_model_selection',
 } as const;
 
-export type AiProvider = 'anthropic' | 'openai' | 'openai-compatible';
+export type AiProvider = ApiKeyProvider;
 
 export interface AiModelSelection {
-  provider: AiProvider;
+  provider: AiConnectionProvider;
   modelId: string;
 }
 
@@ -177,7 +178,7 @@ export function setStoredModel(model: string): void {
   });
 }
 
-export function getPreferredDefaultModelSelection(providers: readonly string[]): AiModelSelection {
+export function getPreferredDefaultModelSelection(providers: readonly AiConnectionProvider[]): AiModelSelection {
   if (providers.includes('anthropic')) {
     return { provider: 'anthropic', modelId: getPreferredDefaultModel(['anthropic']) };
   }
@@ -191,6 +192,12 @@ export function getPreferredDefaultModelSelection(providers: readonly string[]):
       modelId: config.modelId || DEFAULT_MODEL_IDS['openai-compatible'],
     };
   }
+  if (providers.includes('codex-subscription')) {
+    return { provider: 'codex-subscription', modelId: '' };
+  }
+  if (providers.includes('grok-subscription')) {
+    return { provider: 'grok-subscription', modelId: '' };
+  }
   return { provider: 'anthropic', modelId: getPreferredDefaultModel(['anthropic']) };
 }
 
@@ -198,11 +205,15 @@ function isAiProvider(value: unknown): value is AiProvider {
   return value === 'anthropic' || value === 'openai' || value === 'openai-compatible';
 }
 
+export function isAiConnectionProvider(value: unknown): value is AiConnectionProvider {
+  return isAiProvider(value) || value === 'codex-subscription' || value === 'grok-subscription';
+}
+
 function parseStoredModelSelection(raw: string | null): AiModelSelection | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<AiModelSelection>;
-    if (isAiProvider(parsed.provider) && typeof parsed.modelId === 'string') {
+    if (isAiConnectionProvider(parsed.provider) && typeof parsed.modelId === 'string') {
       const modelId = parsed.modelId.trim();
       if (modelId) {
         return { provider: parsed.provider, modelId };
@@ -259,7 +270,7 @@ export function setStoredModelSelection(selection: AiModelSelection): void {
   localStorage.setItem(STORAGE_KEYS.model, modelId);
 }
 
-export function clearStoredModelSelectionForProvider(provider: AiProvider): void {
+export function clearStoredModelSelectionForProvider(provider: AiConnectionProvider): void {
   const storedSelection = parseStoredModelSelection(
     localStorage.getItem(STORAGE_KEYS.modelSelection)
   );

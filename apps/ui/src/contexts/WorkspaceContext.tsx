@@ -5,7 +5,7 @@ import type { RenderKind } from '../hooks/useOpenScad';
 import type { AddDraftFilesResult } from '../hooks/useAiAgent';
 import type { AiPromptPanelRef } from '../components/AiPromptPanel';
 import type { ViewerAnnotationAttachResult } from '../components/viewer-annotation';
-import type { AiProvider } from '../stores/apiKeyStore';
+import type { AiConnectionProvider } from '../platform/types';
 import type { Settings } from '../stores/settingsStore';
 import type { WorkspaceTab } from '../stores/workspaceTypes';
 import type { AiDraft, AttachmentStore, Message, ToolCall, VisionSupport } from '../types/aiChat';
@@ -50,10 +50,10 @@ export interface WorkspaceState {
   canSubmitDraft: boolean;
   isProcessingAttachments: boolean;
   currentToolCalls: ToolCall[];
-  currentProvider: AiProvider;
+  currentProvider: AiConnectionProvider;
   currentModel: string;
   currentModelVisionSupport: VisionSupport;
-  availableProviders: AiProvider[];
+  availableProviders: AiConnectionProvider[];
   submitDraft: () => void;
   setDraftText: (text: string) => void;
   addDraftFiles: (
@@ -72,7 +72,7 @@ export interface WorkspaceState {
   setCurrentModel: (
     model: string,
     sourceSurface?: ModelSelectionSurface,
-    provider?: AiProvider
+    provider?: AiConnectionProvider
   ) => void;
   handleRestoreCheckpoint: (checkpointId: string, truncatedMessages: Message[]) => void;
   aiPromptPanelRef: React.RefObject<AiPromptPanelRef | null>;

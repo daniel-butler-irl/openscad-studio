@@ -9,7 +9,7 @@ import { useAnalytics, type ModelSelectionSurface } from '../analytics/runtime';
 import { useHistory } from '../hooks/useHistory';
 import { getPlatform } from '../platform';
 import { useHasApiKey } from '../stores/apiKeyStore';
-import type { AiProvider } from '../stores/apiKeyStore';
+import type { AiConnectionProvider } from '../platform/types';
 import { notifyError, notifySuccess } from '../utils/notifications';
 import type {
   AiDraft,
@@ -349,13 +349,13 @@ export interface AiPromptPanelProps {
   messages?: Message[];
   onNewConversation?: () => void;
   currentToolCalls?: ToolCall[];
-  currentProvider?: AiProvider;
+  currentProvider?: AiConnectionProvider;
   currentModel?: string;
-  availableProviders?: AiProvider[];
+  availableProviders?: AiConnectionProvider[];
   onModelChange?: (
     model: string,
     sourceSurface?: ModelSelectionSurface,
-    provider?: AiProvider
+    provider?: AiConnectionProvider
   ) => void;
   onRestoreCheckpoint?: (checkpointId: string, truncatedMessages: Message[]) => void;
   onOpenSettings?: () => void;

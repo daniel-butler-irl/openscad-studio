@@ -392,6 +392,7 @@ describe('useAiAgent', () => {
     });
 
     expect(createModel).toHaveBeenCalledWith('openai-compatible', 'local', 'gemma4:12b', {
+      kind: 'api-key',
       baseUrl: 'http://127.0.0.1:11434/v1',
     });
     expect(hook.current().messages[1]).toMatchObject({

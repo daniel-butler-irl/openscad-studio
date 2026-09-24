@@ -5,7 +5,8 @@ import { AiComposer } from './AiComposer';
 import { ModelSelector } from './ModelSelector';
 import { TbFileText, TbFolder, TbFolderOpen } from 'react-icons/tb';
 import { getPlatform } from '../platform';
-import { useHasApiKey, type AiProvider } from '../stores/apiKeyStore';
+import { useHasApiKey } from '../stores/apiKeyStore';
+import type { AiConnectionProvider } from '../platform/types';
 import type { AiDraft, AttachmentStore } from '../types/aiChat';
 import {
   loadRecentFiles,
@@ -35,13 +36,13 @@ interface WelcomeScreenProps {
   onOpenFolder?: () => void;
   onOpenSettings?: () => void;
   showRecentFiles?: boolean;
-  currentProvider?: AiProvider;
+  currentProvider?: AiConnectionProvider;
   currentModel?: string;
-  availableProviders?: AiProvider[];
+  availableProviders?: AiConnectionProvider[];
   onModelChange?: (
     model: string,
     sourceSurface?: ModelSelectionSurface,
-    provider?: AiProvider
+    provider?: AiConnectionProvider
   ) => void;
   /** Resolved default project directory path (null on web → hidden) */
   projectDirectory?: string | null;

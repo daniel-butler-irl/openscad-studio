@@ -45,6 +45,12 @@ export interface AssistantMessage extends BaseMessage {
   turnId: string;
   content: string;
   state: AssistantMessageState;
+  /** Encrypted OpenAI reasoning needed to continue a stateless Codex Responses turn. */
+  continuation?: {
+    provider: 'codex-subscription';
+    accountGeneration: number;
+    encryptedContent: string;
+  };
 }
 
 export interface ToolCallMessage extends BaseMessage {

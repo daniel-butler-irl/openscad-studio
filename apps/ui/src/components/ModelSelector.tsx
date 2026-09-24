@@ -11,27 +11,29 @@ import {
   SelectLabel,
 } from './ui';
 import { notifyError } from '../utils/notifications';
-import { getProviderFromModel, type AiProvider } from '../stores/apiKeyStore';
+import { getProviderFromModel } from '../stores/apiKeyStore';
+import type { AiConnectionProvider } from '../platform/types';
 
 interface ModelSelectorProps {
   currentModel: string;
-  currentProvider?: AiProvider;
-  availableProviders: AiProvider[];
-  onChange: (model: string, provider: AiProvider) => void;
+  currentProvider?: AiConnectionProvider;
+  availableProviders: AiConnectionProvider[];
+  onChange: (model: string, provider: AiConnectionProvider) => void;
   disabled?: boolean;
   compact?: boolean;
 }
 
-function encodeModelValue(provider: AiProvider, modelId: string): string {
+function encodeModelValue(provider: AiConnectionProvider, modelId: string): string {
   return JSON.stringify([provider, modelId]);
 }
 
-function decodeModelValue(value: string): { provider: AiProvider; modelId: string } {
+function decodeModelValue(value: string): { provider: AiConnectionProvider; modelId: string } {
   try {
     const parsed = JSON.parse(value);
     if (
       Array.isArray(parsed) &&
-      (parsed[0] === 'anthropic' || parsed[0] === 'openai' || parsed[0] === 'openai-compatible') &&
+      (parsed[0] === 'anthropic' || parsed[0] === 'openai' || parsed[0] === 'openai-compatible' ||
+        parsed[0] === 'codex-subscription' || parsed[0] === 'grok-subscription') &&
       typeof parsed[1] === 'string'
     ) {
       return { provider: parsed[0], modelId: parsed[1] };
@@ -57,9 +59,13 @@ export function ModelSelector({
     anthropic: anthropicModels,
     openai: openaiModels,
     openaiCompatible: openAiCompatibleModels,
+    codexSubscription: codexModels,
+    grokSubscription: grokModels,
   } = groupedByProvider;
   const hasModels =
-    anthropicModels.length > 0 || openaiModels.length > 0 || openAiCompatibleModels.length > 0;
+    anthropicModels.length > 0 || openaiModels.length > 0 || openAiCompatibleModels.length > 0 ||
+    codexModels.length > 0 || grokModels.length > 0;
+  const allModels = [...anthropicModels, ...openaiModels, ...openAiCompatibleModels, ...codexModels, ...grokModels];
   const selectedProvider = currentProvider ?? getProviderFromModel(currentModel);
   const selectedValue = encodeModelValue(selectedProvider, currentModel);
 
@@ -87,6 +93,13 @@ export function ModelSelector({
 
     onChange(openAiCompatibleModels[0].id, 'openai-compatible');
   }, [currentModel, disabled, isLoading, onChange, openAiCompatibleModels, selectedProvider]);
+
+  useEffect(() => {
+    if (disabled || isLoading || allModels.length === 0) return;
+    if (allModels.some((model) => model.provider === selectedProvider && model.id === currentModel)) return;
+    const selected = allModels.find((model) => model.recommended) ?? allModels[0];
+    onChange(selected.id, selected.provider);
+  }, [allModels, currentModel, disabled, isLoading, onChange, selectedProvider]);
 
   if (!hasModels && !isLoading) {
     return (
@@ -137,7 +150,7 @@ export function ModelSelector({
             </SelectGroup>
           )}
           {anthropicModels.length > 0 &&
-            (openaiModels.length > 0 || openAiCompatibleModels.length > 0) && (
+            (openaiModels.length > 0 || openAiCompatibleModels.length > 0 || codexModels.length > 0 || grokModels.length > 0) && (
               <div
                 className="my-1 mx-2 h-px"
                 style={{ backgroundColor: 'var(--border-primary)' }}
@@ -170,6 +183,18 @@ export function ModelSelector({
                   {model.display_name}
                 </SelectItem>
               ))}
+            </SelectGroup>
+          )}
+          {codexModels.length > 0 && (
+            <SelectGroup>
+              <SelectLabel>Codex subscription</SelectLabel>
+              {codexModels.map((model) => <SelectItem key={`${model.provider}:${model.id}`} value={encodeModelValue(model.provider, model.id)}>{model.display_name}</SelectItem>)}
+            </SelectGroup>
+          )}
+          {grokModels.length > 0 && (
+            <SelectGroup>
+              <SelectLabel>Grok subscription</SelectLabel>
+              {grokModels.map((model) => <SelectItem key={`${model.provider}:${model.id}`} value={encodeModelValue(model.provider, model.id)}>{model.display_name}</SelectItem>)}
             </SelectGroup>
           )}
         </SelectContent>
