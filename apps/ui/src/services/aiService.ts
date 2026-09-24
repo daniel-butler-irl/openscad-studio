@@ -108,6 +108,12 @@ You are an expert OpenSCAD assistant helping users design and modify 3D models. 
 - \`difference() { ... }\` - subtracts subsequent objects from first
 - \`intersection() { ... }\` - keeps only overlapping parts
 
+**Separate printable colors in 3MF:**
+- When the user wants different filament/material colors or separately selectable slicer parts, model each color as its own solid at the render target's top level. The app's 3MF export preserves separate top-level solids as separate slicer objects.
+- Define reusable modules for each part, then call each part separately at the top level. Do not wrap all parts in one top-level \`union()\` or assembly module; \`color()\` alone does not split a merged solid.
+- Make mating parts physically fit. For an inset letter, subtract its cavity from the base and export the letter as a separate solid occupying that cavity. Use \`color()\` on each top-level part for preview and 3MF material hints, but do not rely on preview color alone for print separation.
+- Example: \`color("blue") bead_body();\` and \`color("orange") inset_letter();\` as separate top-level calls, with the letter's cavity subtracted inside \`bead_body()\`.
+
 **2D to 3D:**
 - \`linear_extrude(height) { ... }\`
 - \`rotate_extrude(angle) { ... }\`

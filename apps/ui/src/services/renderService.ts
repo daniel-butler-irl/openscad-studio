@@ -503,6 +503,11 @@ export class WasmRenderService implements IRenderService {
         ? { ...(options.libraryFiles || {}), ...(options.auxiliaryFiles || {}) }
         : undefined;
 
+    // Keep top-level solids as distinct 3MF objects for multi-material slicers.
+    if (format === '3mf') {
+      args.push('--enable=lazy-union');
+    }
+
     // For binary STL (more compact)
     if (format === 'stl') {
       args.push('--export-format=binstl');

@@ -172,6 +172,11 @@ export class NativeRenderService implements IRenderService {
     if (backend === 'manifold') args.push('--backend=manifold');
     else if (backend === 'cgal') args.push('--backend=cgal');
 
+    // Keep top-level solids as distinct 3MF objects for multi-material slicers.
+    if (format === '3mf') {
+      args.push('--enable=lazy-union');
+    }
+
     if (format === 'stl') {
       args.push('--export-format=binstl');
     }

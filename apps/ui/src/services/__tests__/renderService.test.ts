@@ -342,6 +342,31 @@ describe('RenderService', () => {
     }
   });
 
+  it('preserves separate top-level objects when exporting 3MF', async () => {
+    const service = new RenderService();
+    const initPromise = service.init();
+    mockWorkers[0].emitMessage({ type: 'ready' });
+    await initPromise;
+
+    const exportPromise = service.exportModel('cube(10); sphere(5);', '3mf');
+    const { worker, request } = await takeLastPostedRenderRequest();
+    expect(request.args).toEqual([
+      '/input.scad',
+      '-o',
+      '/output.3mf',
+      '--backend=manifold',
+      '--enable=lazy-union',
+    ]);
+    worker.emitMessage({
+      type: 'result',
+      id: request.id,
+      output: new Uint8Array([1]),
+      stderr: '',
+    });
+
+    await expect(exportPromise).resolves.toEqual(new Uint8Array([1]));
+  });
+
   it('throws a generic error when export produces no output without diagnostics', async () => {
     const service = new RenderService();
     const initPromise = service.init();

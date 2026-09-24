@@ -33,6 +33,28 @@ describe('NativeRenderService', () => {
     }));
   });
 
+  it('preserves separate top-level objects when exporting 3MF', async () => {
+    invoke.mockImplementation(async (command: string) => {
+      if (command === 'render_init') return 'OpenSCAD 2026.03.16';
+      if (command === 'render_native') {
+        return { output: [1], stderr: '', exit_code: 0, duration_ms: 1 };
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const { NativeRenderService } = await import('../nativeRenderService');
+    const service = new NativeRenderService();
+
+    await service.exportModel('cube(10); sphere(5);', '3mf');
+
+    expect(invoke).toHaveBeenCalledWith(
+      'render_native',
+      expect.objectContaining({
+        args: ['/input.scad', '-o', '/output.3mf', '--backend=manifold', '--enable=lazy-union'],
+      })
+    );
+  });
+
   it('invalidates cached renders when an auxiliary file changes but the file count stays the same', async () => {
     let renderCount = 0;
     invoke.mockImplementation(async (command: string) => {
