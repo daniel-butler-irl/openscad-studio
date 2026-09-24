@@ -325,7 +325,7 @@ impl NativeSubscriptionAuth {
     pub async fn status(&self, provider: SubscriptionProvider) -> SubscriptionAccountStatus {
         let (generation, account_id, in_memory, stored) = loop {
             let before = self.state(provider).lock().await.generation;
-            let stored = self.read_stored(provider).await.ok().flatten().is_some();
+            let stored = self.read_stored(provider).await;
             let state = self.state(provider).lock().await;
             if state.generation == before {
                 break (
@@ -343,18 +343,24 @@ impl NativeSubscriptionAuth {
             .lock()
             .map(|logins| logins.values().any(|entry| entry.provider == provider))
             .unwrap_or(false);
+        let (account_state, message) = if in_memory || stored.as_ref().is_ok_and(Option::is_some) {
+            (SubscriptionAccountState::SignedIn, None)
+        } else if pending {
+            (SubscriptionAccountState::Pending, None)
+        } else if stored.is_err() {
+            (
+                SubscriptionAccountState::Error,
+                Some(super::sanitize_auth_error(AuthError::StorageUnavailable)),
+            )
+        } else {
+            (SubscriptionAccountState::SignedOut, None)
+        };
         SubscriptionAccountStatus {
             provider,
-            state: if signed_in {
-                SubscriptionAccountState::SignedIn
-            } else if pending {
-                SubscriptionAccountState::Pending
-            } else {
-                SubscriptionAccountState::SignedOut
-            },
+            state: account_state,
             account_id,
             generation,
-            message: None,
+            message,
         }
     }
 
@@ -1040,11 +1046,15 @@ mod tests {
     #[derive(Default)]
     struct MemoryStore {
         values: StdMutex<HashMap<&'static str, String>>,
+        fail_reads: bool,
         fail_writes: bool,
     }
 
     impl CredentialStore for MemoryStore {
         fn read(&self, provider: SubscriptionProvider) -> Result<Option<String>, ()> {
+            if self.fail_reads {
+                return Err(());
+            }
             Ok(self
                 .values
                 .lock()
@@ -1400,6 +1410,7 @@ mod tests {
                 "grok-subscription",
                 stored_refresh("refresh-old"),
             )])),
+            fail_reads: false,
             fail_writes: true,
         });
         let auth = NativeSubscriptionAuth::with_test_store(store, issuer);
@@ -1414,6 +1425,21 @@ mod tests {
             0
         );
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn status_reports_keychain_read_failure_instead_of_appearing_signed_out() {
+        let store = Arc::new(MemoryStore {
+            fail_reads: true,
+            ..MemoryStore::default()
+        });
+        let auth = NativeSubscriptionAuth::with_test_store(store, "http://127.0.0.1".into());
+        let status = auth.status(SubscriptionProvider::GrokSubscription).await;
+        assert_eq!(status.state, SubscriptionAccountState::Error);
+        assert_eq!(
+            status.message.as_deref(),
+            Some("The operating system could not access the subscription keychain.")
+        );
     }
 
     #[tokio::test]
