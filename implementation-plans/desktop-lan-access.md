@@ -23,7 +23,7 @@ Serve a bundled production web build from an opt-in Rust HTTPS server. Generate 
 - [x] Add regression tests for server and UI behavior
 - [x] Run baseline, Rust and applicable browser validation
 - [x] Refresh the context graph
-- [ ] Open draft PR against main
+- [ ] Open draft PR against main (push blocked by automatic approval review; explicit GitHub authorization requested)
 
 ## Validation
 
@@ -37,3 +37,7 @@ Serve a bundled production web build from an opt-in Rust HTTPS server. Generate 
 ## Branch context
 
 This feature branches from `main`. Subscription settings remain on the separate, unmerged `subscription-foundation` branch; LAN changes do not alter AI settings.
+
+## Handoff
+
+Implementation commit: `5417ccb`. Draft PR description prepared in `/tmp/studio-lan-pr.md`. Automatic approval review rejected publishing source changes to `daniel-butler-irl/openscad-studio` without explicit authorization. No push or PR creation has occurred.
