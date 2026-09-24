@@ -95,6 +95,7 @@ struct AuthInner {
     store: Arc<dyn CredentialStore>,
     states: [Mutex<SessionState>; 2],
     refresh_locks: [Mutex<()>; 2],
+    credential_restore_locks: [Mutex<()>; 2],
     login_start_locks: [Mutex<()>; 2],
     logins: StdMutex<HashMap<String, PendingLogin>>,
     endpoints: EndpointSet,
@@ -106,6 +107,7 @@ struct SessionState {
     access_token: Option<String>,
     account_id: Option<String>,
     access_expires_at: Option<Instant>,
+    stored_credential: Option<Result<Option<StoredCredential>, AuthError>>,
 }
 
 struct PendingLogin {
@@ -130,7 +132,7 @@ impl Default for EndpointSet {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredCredential {
     refresh_token: String,
     account_id: Option<String>,
@@ -207,6 +209,7 @@ impl NativeSubscriptionAuth {
                     Mutex::new(SessionState::default()),
                 ],
                 refresh_locks: [Mutex::new(()), Mutex::new(())],
+                credential_restore_locks: [Mutex::new(()), Mutex::new(())],
                 login_start_locks: [Mutex::new(()), Mutex::new(())],
                 logins: StdMutex::new(HashMap::new()),
                 endpoints: EndpointSet::default(),
@@ -325,7 +328,7 @@ impl NativeSubscriptionAuth {
     pub async fn status(&self, provider: SubscriptionProvider) -> SubscriptionAccountStatus {
         let (generation, account_id, in_memory, stored) = loop {
             let before = self.state(provider).lock().await.generation;
-            let stored = self.read_stored(provider).await;
+            let stored = self.cached_stored_credential(provider).await;
             let state = self.state(provider).lock().await;
             if state.generation == before {
                 break (
@@ -687,11 +690,12 @@ impl NativeSubscriptionAuth {
             .filter(|value| !value.is_empty())
             .cloned()
             .ok_or(AuthError::InvalidResponse)?;
-        let encoded = serde_json::to_string(&StoredCredential {
+        let stored_credential = StoredCredential {
             refresh_token,
             account_id: account_id.clone(),
-        })
-        .map_err(|_| AuthError::InvalidResponse)?;
+        };
+        let encoded =
+            serde_json::to_string(&stored_credential).map_err(|_| AuthError::InvalidResponse)?;
         let mut state = self.state(provider).lock().await;
         if state.generation != expected_generation || cancellation.is_cancelled() {
             return Err(AuthError::Cancelled);
@@ -708,10 +712,14 @@ impl NativeSubscriptionAuth {
         {
             return Err(AuthError::Cancelled);
         }
-        self.write_stored(provider, encoded).await?;
+        if self.write_stored(provider, encoded).await.is_err() {
+            state.stored_credential = Some(Err(AuthError::StorageUnavailable));
+            return Err(AuthError::StorageUnavailable);
+        }
         state.generation = state.generation.wrapping_add(1);
         state.access_token = Some(tokens.access_token);
         state.account_id = account_id;
+        state.stored_credential = Some(Ok(Some(stored_credential)));
         state.access_expires_at = Some(
             Instant::now()
                 + Duration::from_secs(tokens.expires_in.unwrap_or(3600).saturating_sub(30)),
@@ -731,6 +739,40 @@ impl NativeSubscriptionAuth {
         value
             .map(|value| serde_json::from_str(&value).map_err(|_| AuthError::StorageUnavailable))
             .transpose()
+    }
+
+    async fn cached_stored_credential(
+        &self,
+        provider: SubscriptionProvider,
+    ) -> Result<Option<StoredCredential>, AuthError> {
+        let state_mutex = self.state(provider);
+        if let Some(cached) = state_mutex.lock().await.stored_credential.clone() {
+            return cached;
+        }
+
+        let _restore = self.inner.credential_restore_locks[provider_index(provider)]
+            .lock()
+            .await;
+        let (generation, cached) = {
+            let state = state_mutex.lock().await;
+            (state.generation, state.stored_credential.clone())
+        };
+        if let Some(cached) = cached {
+            return cached;
+        }
+
+        // Keychain calls can display OS prompts. Read without the provider state
+        // lock, then use generation to discard results that raced with signout/login.
+        let result = self.read_stored(provider).await;
+        let mut state = state_mutex.lock().await;
+        if state.generation != generation {
+            return state
+                .stored_credential
+                .clone()
+                .unwrap_or(Err(AuthError::Cancelled));
+        }
+        state.stored_credential = Some(result.clone());
+        result
     }
 
     async fn write_stored(
@@ -787,10 +829,13 @@ impl NativeSubscriptionAuth {
             }
         }
         let stored = self
-            .read_stored(provider)
+            .cached_stored_credential(provider)
             .await
             .map_err(|_| SessionError::StorageUnavailable)?
             .ok_or(SessionError::SignedOut)?;
+        if self.state(provider).lock().await.generation != expected_generation {
+            return Err(SessionError::StaleGeneration);
+        }
         let refreshed = self
             .exchange_refresh(provider, &stored.refresh_token)
             .await
@@ -808,18 +853,25 @@ impl NativeSubscriptionAuth {
             .clone()
             .unwrap_or(stored.refresh_token);
         let account_id = token_account_id(provider, &refreshed).or(stored.account_id);
-        let encoded = serde_json::to_string(&StoredCredential {
+        let rotated_credential = StoredCredential {
             refresh_token,
             account_id: account_id.clone(),
-        })
-        .map_err(|_| SessionError::StorageUnavailable)?;
+        };
+        let encoded = serde_json::to_string(&rotated_credential)
+            .map_err(|_| SessionError::StorageUnavailable)?;
         let mut state = self.state(provider).lock().await;
         if state.generation != expected_generation {
             return Err(SessionError::StaleGeneration);
         }
-        self.write_stored(provider, encoded)
-            .await
-            .map_err(|_| SessionError::StorageUnavailable)?;
+        if rotated_credential != stored {
+            if self.write_stored(provider, encoded).await.is_err() {
+                state.access_token = None;
+                state.access_expires_at = None;
+                state.stored_credential = Some(Err(AuthError::StorageUnavailable));
+                return Err(SessionError::StorageUnavailable);
+            }
+            state.stored_credential = Some(Ok(Some(rotated_credential)));
+        }
         state.access_token = Some(refreshed.access_token);
         state.account_id = account_id;
         state.access_expires_at = Some(
@@ -888,12 +940,14 @@ impl SubscriptionSessions for NativeSubscriptionAuth {
         state.access_token = None;
         state.account_id = None;
         state.access_expires_at = None;
+        state.stored_credential = Some(Ok(None));
         let generation = state.generation;
         self.cancel_provider_logins(provider)
             .map_err(|_| SessionError::StorageUnavailable)?;
-        self.delete_stored(provider)
-            .await
-            .map_err(|_| SessionError::StorageUnavailable)?;
+        if self.delete_stored(provider).await.is_err() {
+            state.stored_credential = Some(Err(AuthError::StorageUnavailable));
+            return Err(SessionError::StorageUnavailable);
+        }
         drop(state);
         Ok(generation)
     }
@@ -1047,10 +1101,42 @@ mod tests {
         values: StdMutex<HashMap<&'static str, String>>,
         fail_reads: bool,
         fail_writes: bool,
+        read_count: AtomicUsize,
+        write_count: AtomicUsize,
+        read_gate: Option<Arc<ReadGate>>,
+    }
+
+    struct ReadGate {
+        started: tokio::sync::Notify,
+        released: (StdMutex<bool>, std::sync::Condvar),
+    }
+
+    impl ReadGate {
+        fn new() -> Self {
+            Self {
+                started: tokio::sync::Notify::new(),
+                released: (StdMutex::new(false), std::sync::Condvar::new()),
+            }
+        }
+
+        fn release(&self) {
+            let (lock, condition) = &self.released;
+            *lock.lock().unwrap() = true;
+            condition.notify_all();
+        }
     }
 
     impl CredentialStore for MemoryStore {
         fn read(&self, provider: SubscriptionProvider) -> Result<Option<String>, ()> {
+            self.read_count.fetch_add(1, Ordering::SeqCst);
+            if let Some(gate) = &self.read_gate {
+                gate.started.notify_one();
+                let (lock, condition) = &gate.released;
+                let mut released = lock.lock().map_err(|_| ())?;
+                while !*released {
+                    released = condition.wait(released).map_err(|_| ())?;
+                }
+            }
             if self.fail_reads {
                 return Err(());
             }
@@ -1062,6 +1148,7 @@ mod tests {
                 .cloned())
         }
         fn write(&self, provider: SubscriptionProvider, value: &str) -> Result<(), ()> {
+            self.write_count.fetch_add(1, Ordering::SeqCst);
             if self.fail_writes {
                 return Err(());
             }
@@ -1272,6 +1359,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_status_and_authorized_share_one_cold_keychain_read() {
+        let (issuer, count, server) = mock_tokens(vec![FIRST]).await;
+        let store = Arc::new(MemoryStore::default());
+        store
+            .write(
+                SubscriptionProvider::GrokSubscription,
+                &stored_refresh("refresh-old"),
+            )
+            .unwrap();
+        let auth = NativeSubscriptionAuth::with_test_store(store.clone(), issuer);
+        let (status, session) = tokio::join!(
+            auth.status(SubscriptionProvider::GrokSubscription),
+            auth.authorized(SubscriptionProvider::GrokSubscription, 0),
+        );
+        assert!(matches!(status.state, SubscriptionAccountState::SignedIn));
+        assert_eq!(session.unwrap().access_token, "access-one");
+        assert_eq!(store.read_count.load(Ordering::SeqCst), 1);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(store.write_count.load(Ordering::SeqCst), 1);
+
+        for _ in 0..4 {
+            assert!(matches!(
+                auth.status(SubscriptionProvider::GrokSubscription)
+                    .await
+                    .state,
+                SubscriptionAccountState::SignedIn
+            ));
+            auth.authorized(SubscriptionProvider::GrokSubscription, 0)
+                .await
+                .unwrap();
+        }
+        assert_eq!(store.read_count.load(Ordering::SeqCst), 1);
+        assert_eq!(store.write_count.load(Ordering::SeqCst), 1);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sign_out_during_keychain_read_discards_late_credential_restore() {
+        let gate = Arc::new(ReadGate::new());
+        let store = Arc::new(MemoryStore {
+            values: StdMutex::new(HashMap::from([(
+                "grok-subscription",
+                stored_refresh("synthetic-refresh"),
+            )])),
+            read_gate: Some(gate.clone()),
+            ..MemoryStore::default()
+        });
+        let auth =
+            NativeSubscriptionAuth::with_test_store(store.clone(), "http://127.0.0.1".into());
+        let status_auth = auth.clone();
+        let status = tokio::spawn(async move {
+            status_auth
+                .status(SubscriptionProvider::GrokSubscription)
+                .await
+        });
+        gate.started.notified().await;
+
+        let generation = auth
+            .sign_out(SubscriptionProvider::GrokSubscription)
+            .await
+            .unwrap();
+        assert_eq!(generation, 1);
+        gate.release();
+
+        assert!(matches!(
+            status.await.unwrap().state,
+            SubscriptionAccountState::SignedOut
+        ));
+        assert_eq!(store.read_count.load(Ordering::SeqCst), 1);
+        assert!(store
+            .values
+            .lock()
+            .unwrap()
+            .get("grok-subscription")
+            .is_none());
+        assert!(matches!(
+            auth.status(SubscriptionProvider::GrokSubscription)
+                .await
+                .state,
+            SubscriptionAccountState::SignedOut
+        ));
+        assert_eq!(store.read_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn restart_restores_refresh_credential_and_rotates_it() {
         let (issuer, count, server) = mock_tokens(vec![FIRST]).await;
         let store = Arc::new(MemoryStore::default());
@@ -1286,12 +1458,25 @@ mod tests {
         let status = auth.status(SubscriptionProvider::GrokSubscription).await;
         assert!(matches!(status.state, SubscriptionAccountState::SignedIn));
         assert_eq!(status.generation, 0);
+        assert_eq!(store.read_count.load(Ordering::SeqCst), 1);
         let session = auth
             .authorized(SubscriptionProvider::GrokSubscription, 0)
             .await
             .unwrap();
         assert_eq!(session.access_token, "access-one");
         assert_eq!(count.load(Ordering::SeqCst), 1);
+        for _ in 0..5 {
+            assert!(matches!(
+                auth.status(SubscriptionProvider::GrokSubscription)
+                    .await
+                    .state,
+                SubscriptionAccountState::SignedIn
+            ));
+            auth.authorized(SubscriptionProvider::GrokSubscription, 0)
+                .await
+                .unwrap();
+        }
+        assert_eq!(store.read_count.load(Ordering::SeqCst), 1);
         assert_eq!(
             store
                 .read(SubscriptionProvider::GrokSubscription)
@@ -1401,12 +1586,25 @@ mod tests {
             fail_reads: false,
             fail_writes: true,
         });
-        let auth = NativeSubscriptionAuth::with_test_store(store, issuer);
+        let auth = NativeSubscriptionAuth::with_test_store(store.clone(), issuer);
         assert!(matches!(
             auth.authorized(SubscriptionProvider::GrokSubscription, 0)
                 .await,
             Err(SessionError::StorageUnavailable)
         ));
+        assert!(matches!(
+            auth.status(SubscriptionProvider::GrokSubscription)
+                .await
+                .state,
+            SubscriptionAccountState::Error
+        ));
+        assert!(matches!(
+            auth.authorized(SubscriptionProvider::GrokSubscription, 0)
+                .await,
+            Err(SessionError::StorageUnavailable)
+        ));
+        assert_eq!(store.read_count.load(Ordering::SeqCst), 1);
+        assert_eq!(store.write_count.load(Ordering::SeqCst), 1);
         assert_eq!(
             auth.generation(SubscriptionProvider::GrokSubscription)
                 .await,
@@ -1421,13 +1619,60 @@ mod tests {
             fail_reads: true,
             ..MemoryStore::default()
         });
-        let auth = NativeSubscriptionAuth::with_test_store(store, "http://127.0.0.1".into());
+        let auth =
+            NativeSubscriptionAuth::with_test_store(store.clone(), "http://127.0.0.1".into());
         let status = auth.status(SubscriptionProvider::GrokSubscription).await;
         assert_eq!(status.state, SubscriptionAccountState::Error);
         assert_eq!(
             status.message.as_deref(),
             Some("The operating system could not access the subscription keychain.")
         );
+        for _ in 0..10 {
+            assert_eq!(
+                auth.status(SubscriptionProvider::GrokSubscription)
+                    .await
+                    .message
+                    .as_deref(),
+                Some("The operating system could not access the subscription keychain.")
+            );
+        }
+        assert!(matches!(
+            auth.authorized(SubscriptionProvider::GrokSubscription, 0)
+                .await,
+            Err(SessionError::StorageUnavailable)
+        ));
+        assert_eq!(store.read_count.load(Ordering::SeqCst), 1);
+
+        // An explicit reconnect writes a fresh credential and replaces the cached denial.
+        let cancellation = CancellationToken::new();
+        auth.inner.logins.lock().unwrap().insert(
+            "synthetic-reconnect".into(),
+            PendingLogin {
+                provider: SubscriptionProvider::GrokSubscription,
+                cancellation: cancellation.clone(),
+            },
+        );
+        auth.install_tokens(
+            SubscriptionProvider::GrokSubscription,
+            0,
+            "synthetic-reconnect",
+            &cancellation,
+            TokenResponse {
+                access_token: "reconnected-access".into(),
+                refresh_token: Some("reconnected-refresh".into()),
+                expires_in: Some(3600),
+                id_token: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            auth.status(SubscriptionProvider::GrokSubscription)
+                .await
+                .state,
+            SubscriptionAccountState::SignedIn
+        ));
+        assert_eq!(store.read_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
