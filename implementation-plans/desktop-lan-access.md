@@ -23,7 +23,7 @@ Serve a bundled production web build from an opt-in Rust HTTPS server. Generate 
 - [x] Add regression tests for server and UI behavior
 - [x] Run baseline, Rust and applicable browser validation
 - [x] Refresh the context graph
-- [ ] Open draft PR against main
+- [x] Open draft PR against main
 
 ## Validation
 
@@ -41,3 +41,5 @@ This feature branches from `main`. Subscription settings remain on the separate,
 ## Handoff
 
 Implementation commit: `5417ccb`. Draft PR description prepared in `/tmp/studio-lan-pr.md`. The user explicitly approved the live LAN test and publishing a draft PR to `daniel-butler-irl/openscad-studio`. LAN hosting was stopped after verification.
+
+Draft PR: https://github.com/daniel-butler-irl/openscad-studio/pull/2 (base: `main`).
