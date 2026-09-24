@@ -4,11 +4,12 @@ This document describes the AI system that is currently implemented in OpenSCAD 
 
 ## Overview
 
-OpenSCAD Studio runs the AI copilot entirely on the client side.
+OpenSCAD Studio runs the AI copilot in the shared React client, with a narrow native transport for desktop subscription accounts.
 
 - The same React/TypeScript AI stack is used in both the standalone web app and the Tauri desktop app.
-- Model requests are still made directly from the frontend with the Vercel AI SDK.
-- Hosted providers use Anthropic/OpenAI endpoints; local and self-hosted models use a configurable OpenAI-compatible endpoint such as Ollama, llama.cpp, or LM Studio.
+- Anthropic, OpenAI API-key, and OpenAI-compatible model requests are made directly from the frontend with the Vercel AI SDK.
+- Codex and Grok subscription requests use the desktop Tauri bridge and fixed-origin Rust transports; subscription tokens stay native-only.
+- Local and self-hosted models use a configurable OpenAI-compatible endpoint such as Ollama, llama.cpp, or LM Studio.
 - Tauri provides desktop shell features such as native file dialogs, filesystem access, native rendering, and a desktop-only localhost MCP bridge for external agents.
 - OpenSCAD rendering is client-side: web uses `openscad-wasm` in a Web Worker, while the desktop app uses a bundled native OpenSCAD binary invoked via Tauri IPC commands.
 
@@ -74,6 +75,7 @@ Desktop-only shell services:
 │ ├── native OpenSCAD binary rendering (render.rs)            │
 │ ├── localhost MCP server for external agents (mcp.rs)       │
 │ ├── working-directory/history helpers                       │
+│ ├── subscription OAuth + fixed-origin streaming transport  │
 │ └── desktop packaging/runtime                               │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -88,6 +90,8 @@ Hosted AI API keys are currently stored client-side in obfuscated localStorage-b
 - It is not equivalent to backend-only secret storage.
 - The current architecture intentionally prioritizes one shared AI stack across web and desktop over secret isolation.
 - Local provider API keys are optional; Ollama and LM Studio typically work without one.
+
+Codex and Grok subscription credentials use a separate desktop-only path. OAuth refresh credentials are stored through the OS credential manager and access tokens remain in Rust memory. The frontend may receive a sanitized opaque account ID as part of account status, plus model metadata and ordered stream bytes, but never provider tokens. The web app does not expose subscription sign-in. Subscription requests use fixed provider endpoints, native-selected headers, and cancellation scoped to the originating window and account generation. These subscription sessions are independent of CLI login state and never import CLI credentials.
 
 Relevant code:
 
@@ -117,11 +121,11 @@ Relevant code:
 
 1. The user types a prompt or attaches images in the shared composer.
 2. `useAiAgent.ts` converts chat messages into Vercel AI SDK message parts.
-3. `streamText()` sends the request directly to the selected provider.
+3. `streamText()` sends API-key and local-provider requests directly; subscription models use a fetch-compatible response backed by the desktop native transport.
 4. Streaming text and tool calls update the transcript in real time.
 5. Tool execution happens locally in the frontend.
 
-The in-app copilot still has no Rust-side model transport or backend conversation loop. Desktop builds now also expose a localhost MCP server from Tauri for external-agent workflows, with requests bridged into the active workspace window.
+The in-app copilot keeps its conversation and tool loop in TypeScript. Tauri provides a desktop-only subscription credential and fixed-origin HTTP transport; it does not run the tool loop. Desktop builds also expose a localhost MCP server for external-agent workflows, with requests bridged into the active workspace window.
 
 ### Provider selection
 
@@ -129,6 +133,7 @@ The in-app copilot still has no Rust-side model transport or backend conversatio
 - Legacy bare model ids are migrated to provider-aware selections.
 - Available hosted models are fetched from provider APIs on the client when keys exist.
 - The OpenAI-compatible provider is available when a base URL and model id are configured; `/models` is used when the local server supports it.
+- Codex and Grok subscription models appear only in the desktop app after their account is signed in; backend, tools, image, and reasoning metadata are kept with each catalog entry.
 
 Relevant code:
 
@@ -160,6 +165,7 @@ All tool execution is implemented in TypeScript and runs inside the app frontend
 - React UI
 - AI chat/composer state
 - Vercel AI SDK provider calls
+- Subscription fetch adapter and shared chat/tool state
 - diagnostics parsing
 - image attachment preprocessing
 
@@ -168,6 +174,7 @@ All tool execution is implemented in TypeScript and runs inside the app frontend
 - native file dialogs
 - full filesystem reads/writes
 - native menus
+- subscription OAuth and fixed-origin model transport
 - desktop packaging/runtime
 - native OpenSCAD binary rendering
 - localhost MCP endpoint for external agents
@@ -206,9 +213,6 @@ Do not create an implementation plan for small maintenance-only tasks. Straightf
 
 This document is intentionally scoped to the architecture that exists today:
 
-- AI is client-side
-- keys are client-side
-- Tauri is not an AI backend
-- web and desktop share one AI implementation
-
-If the project later moves AI transport or key handling into Rust/Tauri, this document should be updated again at that time.
+- The conversation, tools, edit validation, and checkpoints remain in the shared React client.
+- API-key and local-provider requests originate in the frontend; desktop subscription credentials and HTTP requests are handled by Rust/Tauri.
+- Subscription accounts are desktop-only; the web app continues to use API keys and local endpoints.

@@ -6,7 +6,11 @@ import {
   type OpenAiCompatibleConfig,
 } from '../stores/apiKeyStore';
 import { refreshSubscriptionModels, useSubscriptionStore } from '../stores/subscriptionStore';
-import type { AiConnectionProvider, SubscriptionModelInfo, SubscriptionProvider } from '../platform/types';
+import type {
+  AiConnectionProvider,
+  SubscriptionModelInfo,
+  SubscriptionProvider,
+} from '../platform/types';
 import { getVisionSupportForModelId } from '../utils/aiMessages';
 import {
   compareModelsByFreshness,
@@ -60,12 +64,16 @@ interface CachedModels {
 const API_PROVIDERS: AiProvider[] = ['anthropic', 'openai', 'openai-compatible'];
 const SUBSCRIPTION_PROVIDERS: SubscriptionProvider[] = ['codex-subscription', 'grok-subscription'];
 
-function toSubscriptionModel(provider: SubscriptionProvider, model: SubscriptionModelInfo): ModelInfo {
+function toSubscriptionModel(
+  provider: SubscriptionProvider,
+  model: SubscriptionModelInfo
+): ModelInfo {
   return {
     id: model.id,
     display_name: model.name,
     provider,
-    visionSupport: model.images === 'supported' ? 'yes' : model.images === 'unsupported' ? 'no' : 'unknown',
+    visionSupport:
+      model.images === 'supported' ? 'yes' : model.images === 'unsupported' ? 'no' : 'unknown',
     images: model.images,
     reasoning: model.reasoning,
     tools: model.tools,
@@ -274,8 +282,9 @@ export function useModels(availableProviders: AiConnectionProvider[]): UseModels
   providersRef.current = availableProviders;
   const providersKey = [...availableProviders].sort().join(',');
   const { status: subscriptionStatus } = useSubscriptionStore();
-  const subscriptionKey = SUBSCRIPTION_PROVIDERS
-    .filter((provider) => availableProviders.includes(provider))
+  const subscriptionKey = SUBSCRIPTION_PROVIDERS.filter((provider) =>
+    availableProviders.includes(provider)
+  )
     .map((provider) => `${provider}:${subscriptionStatus[provider].generation}`)
     .join(',');
   const requestIdRef = useRef(0);
@@ -288,7 +297,8 @@ export function useModels(availableProviders: AiConnectionProvider[]): UseModels
         API_PROVIDERS.includes(provider as AiProvider)
       );
       const activeSubscriptions = SUBSCRIPTION_PROVIDERS.filter(
-        (provider) => providers.includes(provider) && subscriptionStatus[provider].state === 'signed-in'
+        (provider) =>
+          providers.includes(provider) && subscriptionStatus[provider].state === 'signed-in'
       );
       if (providers.length === 0) {
         if (requestId !== requestIdRef.current) return;
@@ -367,7 +377,10 @@ export function useModels(availableProviders: AiConnectionProvider[]): UseModels
         const subscriptionFetches = activeSubscriptions.map(async (provider) => {
           try {
             const models = await refreshSubscriptionModels(provider, forceRefresh);
-            return { models: models.map((model) => toSubscriptionModel(provider, model)), error: null };
+            return {
+              models: models.map((model) => toSubscriptionModel(provider, model)),
+              error: null,
+            };
           } catch (error) {
             return {
               models: [] as ModelInfo[],
@@ -377,7 +390,10 @@ export function useModels(availableProviders: AiConnectionProvider[]): UseModels
         });
 
         const results = await Promise.all([...fetches, ...subscriptionFetches]);
-        const allModels = [...(cachedApi?.models ?? []), ...results.flatMap((result) => result.models)];
+        const allModels = [
+          ...(cachedApi?.models ?? []),
+          ...results.flatMap((result) => result.models),
+        ];
         const errors = results
           .map((result) => result.error)
           .filter((value): value is string => Boolean(value));
@@ -389,7 +405,10 @@ export function useModels(availableProviders: AiConnectionProvider[]): UseModels
           setError(errors.length > 0 ? errors.join('\n') : null);
           setFromCache(Boolean(cachedApi));
           setCacheAgeMinutes(cachedApi?.ageMinutes ?? null);
-          saveCache(sorted.filter((model) => API_PROVIDERS.includes(model.provider as AiProvider)), apiProviders);
+          saveCache(
+            sorted.filter((model) => API_PROVIDERS.includes(model.provider as AiProvider)),
+            apiProviders
+          );
         } else {
           const customConfig = getOpenAiCompatibleConfig();
           const customDefaults =

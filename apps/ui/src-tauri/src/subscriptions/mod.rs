@@ -151,8 +151,6 @@ pub struct SubscriptionRequest {
     pub model_id: String,
     /// Untrusted protocol input. Native validates and overwrites routing and safety fields.
     pub body: serde_json::Value,
-    /// Must be native-issued and scoped to provider, account generation, and window.
-    pub continuation_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -188,8 +186,10 @@ pub enum SubscriptionRequestEvent {
 pub struct SubscriptionRuntime {
     pub auth: auth::NativeSubscriptionAuth,
     pub transport: Arc<transport::SubscriptionTransport<auth::NativeSubscriptionAuth>>,
-    login_owners: Arc<StdMutex<HashMap<String, (String, SubscriptionProvider, u64)>>>,
+    login_owners: LoginOwners,
 }
+
+type LoginOwners = Arc<StdMutex<HashMap<String, (String, SubscriptionProvider, u64)>>>;
 
 impl SubscriptionRuntime {
     pub fn new() -> Result<Self, String> {

@@ -83,19 +83,22 @@ export function messagesToModelMessages(
       flushPendingToolMessages();
       const continuation = msg.continuation;
       const canContinue =
-        continuation && continuationScope?.provider === continuation.provider &&
+        continuation &&
+        continuationScope?.provider === continuation.provider &&
         continuationScope.accountGeneration === continuation.accountGeneration;
       modelMessages.push({
         role: 'assistant' as const,
         content: [
           ...(canContinue
-            ? [{
-                type: 'reasoning' as const,
-                text: '',
-                providerOptions: {
-                  openai: { reasoningEncryptedContent: continuation.encryptedContent },
+            ? [
+                {
+                  type: 'reasoning' as const,
+                  text: '',
+                  providerOptions: {
+                    openai: { reasoningEncryptedContent: continuation.encryptedContent },
+                  },
                 },
-              }]
+              ]
             : []),
           { type: 'text' as const, text: msg.content },
         ],

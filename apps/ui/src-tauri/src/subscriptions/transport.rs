@@ -141,8 +141,7 @@ impl<S: SubscriptionSessions + 'static> SubscriptionTransport<S> {
         if !request.body.is_object() {
             return Err("The subscription request body is invalid.".to_owned());
         }
-        if request.continuation_id.is_some()
-            || request.body.get("previous_response_id").is_some()
+        if request.body.get("previous_response_id").is_some()
             || request.body.get("conversation_id").is_some()
         {
             return Err(
@@ -614,6 +613,11 @@ fn parse_model(provider: SubscriptionProvider, entry: &Value) -> Option<Subscrip
         Some("responses") => ApiBackend::Responses,
         Some("chat" | "chat-completions" | "chat_completions") => ApiBackend::ChatCompletions,
         _ if provider == SubscriptionProvider::CodexSubscription => ApiBackend::Responses,
+        _ if provider == SubscriptionProvider::GrokSubscription => match id.as_str() {
+            "grok-4.6" | "grok-4.5" => ApiBackend::Responses,
+            "grok-build" => ApiBackend::ChatCompletions,
+            _ => ApiBackend::Unknown,
+        },
         _ => ApiBackend::Unknown,
     };
     let context_window = entry
@@ -706,52 +710,40 @@ mod tests {
     }
 
     impl SubscriptionSessions for TestSessions {
-        fn authorized(
+        async fn authorized(
             &self,
             _provider: SubscriptionProvider,
             expected_generation: u64,
-        ) -> impl std::future::Future<Output = Result<AuthorizedSession, SessionError>> + Send
-        {
-            async move {
-                if self.generation.load(Ordering::SeqCst) != expected_generation {
-                    return Err(SessionError::StaleGeneration);
-                }
-                Ok(AuthorizedSession {
-                    access_token: "test-token".to_owned(),
-                    account_id: Some("test-account".to_owned()),
-                    generation: expected_generation,
-                })
+        ) -> Result<AuthorizedSession, SessionError> {
+            if self.generation.load(Ordering::SeqCst) != expected_generation {
+                return Err(SessionError::StaleGeneration);
             }
+            Ok(AuthorizedSession {
+                access_token: "test-token".to_owned(),
+                account_id: Some("test-account".to_owned()),
+                generation: expected_generation,
+            })
         }
 
-        fn refresh_after_unauthorized(
+        async fn refresh_after_unauthorized(
             &self,
             _provider: SubscriptionProvider,
             expected_generation: u64,
             _used_access_token: &str,
-        ) -> impl std::future::Future<Output = Result<AuthorizedSession, SessionError>> + Send
-        {
-            async move {
-                Ok(AuthorizedSession {
-                    access_token: "rotated-test-token".to_owned(),
-                    account_id: Some("test-account".to_owned()),
-                    generation: expected_generation,
-                })
-            }
+        ) -> Result<AuthorizedSession, SessionError> {
+            Ok(AuthorizedSession {
+                access_token: "rotated-test-token".to_owned(),
+                account_id: Some("test-account".to_owned()),
+                generation: expected_generation,
+            })
         }
 
-        fn generation(
-            &self,
-            _provider: SubscriptionProvider,
-        ) -> impl std::future::Future<Output = u64> + Send {
-            async move { self.generation.load(Ordering::SeqCst) }
+        async fn generation(&self, _provider: SubscriptionProvider) -> u64 {
+            self.generation.load(Ordering::SeqCst)
         }
 
-        fn sign_out(
-            &self,
-            _provider: SubscriptionProvider,
-        ) -> impl std::future::Future<Output = Result<u64, SessionError>> + Send {
-            async move { Ok(self.generation.fetch_add(1, Ordering::SeqCst) + 1) }
+        async fn sign_out(&self, _provider: SubscriptionProvider) -> Result<u64, SessionError> {
+            Ok(self.generation.fetch_add(1, Ordering::SeqCst) + 1)
         }
     }
 
@@ -792,7 +784,6 @@ mod tests {
             account_generation: 1,
             model_id: "grok-4.6".into(),
             body: json!({"input":[{"role":"user","content":"hi"}]}),
-            continuation_id: None,
         }
     }
 
@@ -859,7 +850,6 @@ mod tests {
             account_generation: 3,
             model_id: "gpt-5-codex".into(),
             body: json!({ "input": [{"role":"user","content":"build a cube"}], "store": true }),
-            continuation_id: None,
         };
         let body = prepare_body(&request, ApiBackend::Responses).unwrap();
         assert_eq!(body["model"], "gpt-5-codex");
@@ -888,6 +878,23 @@ mod tests {
         assert_eq!(models[0].context_window, Some(500_000));
         assert_eq!(models[1].api_backend, ApiBackend::ChatCompletions);
         assert_eq!(models[2].api_backend, ApiBackend::Unknown);
+    }
+
+    #[test]
+    fn grok_catalog_uses_only_known_id_backend_fallbacks() {
+        let models = parse_model_catalog(
+            SubscriptionProvider::GrokSubscription,
+            &json!({"data":[
+                {"id":"grok-4.6"},
+                {"id":"grok-4.5"},
+                {"model":"grok-build"},
+                {"id":"future-model"}
+            ]}),
+        );
+        assert_eq!(models[0].api_backend, ApiBackend::Responses);
+        assert_eq!(models[1].api_backend, ApiBackend::Responses);
+        assert_eq!(models[2].api_backend, ApiBackend::ChatCompletions);
+        assert_eq!(models[3].api_backend, ApiBackend::Unknown);
     }
 
     #[test]

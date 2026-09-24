@@ -144,7 +144,11 @@ You are an expert OpenSCAD assistant helping users design and modify 3D models. 
 
 export type CreateModelOptions =
   | { kind: 'api-key'; baseUrl?: string }
-  | { kind: 'subscription'; accountGeneration: number; apiBackend?: 'responses' | 'chat-completions' | 'unknown' }
+  | {
+      kind: 'subscription';
+      accountGeneration: number;
+      apiBackend?: 'responses' | 'chat-completions' | 'unknown';
+    }
   /** Backward-compatible API-key configuration for existing callers. */
   | { baseUrl?: string };
 

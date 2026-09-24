@@ -178,7 +178,9 @@ export function setStoredModel(model: string): void {
   });
 }
 
-export function getPreferredDefaultModelSelection(providers: readonly AiConnectionProvider[]): AiModelSelection {
+export function getPreferredDefaultModelSelection(
+  providers: readonly AiConnectionProvider[]
+): AiModelSelection {
   if (providers.includes('anthropic')) {
     return { provider: 'anthropic', modelId: getPreferredDefaultModel(['anthropic']) };
   }

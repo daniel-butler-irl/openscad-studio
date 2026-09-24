@@ -30,7 +30,11 @@ import {
   type AiProvider,
 } from '../stores/apiKeyStore';
 import type { AiConnectionProvider } from '../platform/types';
-import { getSubscriptionSnapshot, useAvailableAiConnections, useSubscriptionStore } from '../stores/subscriptionStore';
+import {
+  getSubscriptionSnapshot,
+  useAvailableAiConnections,
+  useSubscriptionStore,
+} from '../stores/subscriptionStore';
 import type {
   AiDraft,
   AssistantMessage,
@@ -293,7 +297,10 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
   const didReceiveResponseRef = useRef(false);
   const requestStartedAtRef = useRef<number | null>(null);
   const continuationRef = useRef<AssistantMessage['continuation']>();
-  const continuationScopeRef = useRef<{ provider: 'codex-subscription'; accountGeneration: number } | null>(null);
+  const continuationScopeRef = useRef<{
+    provider: 'codex-subscription';
+    accountGeneration: number;
+  } | null>(null);
 
   useEffect(() => {
     if (!state.isStreaming) {
@@ -458,14 +465,15 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
     loadModelAndProviders();
   }, [loadModelAndProviders]);
 
+  const codexAccountGeneration = subscriptionStatus['codex-subscription'].generation;
+
   useEffect(() => {
     const expectedGeneration =
-      state.currentProvider === 'codex-subscription'
-        ? subscriptionStatus['codex-subscription'].generation
-        : -1;
+      state.currentProvider === 'codex-subscription' ? codexAccountGeneration : -1;
     setState((previous) => {
       const messages = previous.messages.map((message) =>
-        message.type === 'assistant' && message.continuation &&
+        message.type === 'assistant' &&
+        message.continuation &&
         (message.continuation.provider !== state.currentProvider ||
           message.continuation.accountGeneration !== expectedGeneration)
           ? { ...message, continuation: undefined }
@@ -475,7 +483,7 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
       committedMessagesRef.current = messages;
       return { ...previous, messages };
     });
-  }, [state.currentProvider, subscriptionStatus['codex-subscription'].generation]);
+  }, [codexAccountGeneration, state.currentProvider]);
 
   const logTurnWarnings = useCallback((warnings: string[]) => {
     if (!IS_DEV || warnings.length === 0) return;
@@ -557,7 +565,8 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
           }
           if (targetIndex >= 0) {
             const target = nextConversation.messages[targetIndex];
-            if (target?.type === 'assistant') nextMessages[targetIndex] = { ...target, continuation };
+            if (target?.type === 'assistant')
+              nextMessages[targetIndex] = { ...target, continuation };
           }
         }
 
@@ -796,7 +805,10 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
         const catalog = getSubscriptionSnapshot().models[provider] ?? [];
         const modelMetadata = catalog.find((model) => model.id === currentState.currentModel);
         if (account.state !== 'signed-in') {
-          setState((prev) => ({ ...prev, error: 'Reconnect this subscription in Settings before sending.' }));
+          setState((prev) => ({
+            ...prev,
+            error: 'Reconnect this subscription in Settings before sending.',
+          }));
           return;
         }
         modelOptions = {
@@ -804,9 +816,10 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
           accountGeneration: account.generation,
           apiBackend: modelMetadata?.apiBackend,
         };
-        continuationScopeRef.current = provider === 'codex-subscription'
-          ? { provider, accountGeneration: account.generation }
-          : null;
+        continuationScopeRef.current =
+          provider === 'codex-subscription'
+            ? { provider, accountGeneration: account.generation }
+            : null;
         continuationRef.current = undefined;
       }
 
@@ -881,7 +894,7 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
           provider === 'openai-compatible' || isSubscription
             ? createModelImpl(provider, apiKey, currentState.currentModel, modelOptions)
             : createModelImpl(provider, apiKey, currentState.currentModel);
-      const modelMessages = messagesToModelMessagesImpl(
+        const modelMessages = messagesToModelMessagesImpl(
           updatedMessages,
           currentState.attachments,
           continuationScopeRef.current ?? undefined
@@ -920,9 +933,11 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
           }
 
           if (chunk.type === 'reasoning-end' && provider === 'codex-subscription') {
-            const openaiMetadata = (chunk.providerMetadata as
-              | { openai?: { reasoningEncryptedContent?: unknown } }
-              | undefined)?.openai;
+            const openaiMetadata = (
+              chunk.providerMetadata as
+                | { openai?: { reasoningEncryptedContent?: unknown } }
+                | undefined
+            )?.openai;
             if (typeof openaiMetadata?.reasoningEncryptedContent === 'string') {
               const scope = continuationScopeRef.current;
               if (scope) {
@@ -1099,12 +1114,19 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
         ...prev,
         currentProvider: provider,
         currentModel: model,
-        currentModelVisionSupport: provider === 'codex-subscription' || provider === 'grok-subscription'
-          ? (() => {
-              const imageSupport = (getSubscriptionSnapshot().models[provider] ?? []).find((entry) => entry.id === model)?.images;
-              return imageSupport === 'supported' ? 'yes' : imageSupport === 'unsupported' ? 'no' : 'unknown';
-            })()
-          : getVisionSupportForModelIdImpl(model),
+        currentModelVisionSupport:
+          provider === 'codex-subscription' || provider === 'grok-subscription'
+            ? (() => {
+                const imageSupport = (getSubscriptionSnapshot().models[provider] ?? []).find(
+                  (entry) => entry.id === model
+                )?.images;
+                return imageSupport === 'supported'
+                  ? 'yes'
+                  : imageSupport === 'unsupported'
+                    ? 'no'
+                    : 'unknown';
+              })()
+            : getVisionSupportForModelIdImpl(model),
       }));
       setStoredModelSelection({ provider, modelId: model });
       analytics.track('model selected', {

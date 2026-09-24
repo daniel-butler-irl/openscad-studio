@@ -149,7 +149,9 @@ export function createSubscriptionFetch(
         streamController?.enqueue(Uint8Array.from(event.bytes));
       } else if (event.kind === 'complete') {
         if (!responseReceived) {
-          finishFailure(new Error('The native subscription stream ended before the response started.'));
+          finishFailure(
+            new Error('The native subscription stream ended before the response started.')
+          );
           return;
         }
         terminal = true;
