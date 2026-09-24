@@ -346,7 +346,10 @@ impl NativeSubscriptionAuth {
             .map(|logins| logins.values().any(|entry| entry.provider == provider))
             .unwrap_or(false);
         let (account_state, message) = if in_memory || stored.as_ref().is_ok_and(Option::is_some) {
-            (SubscriptionAccountState::SignedIn, None)
+            let warning = stored
+                .is_err()
+                .then(|| super::sanitize_auth_error(AuthError::StorageUnavailable));
+            (SubscriptionAccountState::SignedIn, warning)
         } else if pending {
             (SubscriptionAccountState::Pending, None)
         } else if stored.is_err() {
@@ -851,7 +854,7 @@ impl NativeSubscriptionAuth {
         let refresh_token = refreshed
             .refresh_token
             .clone()
-            .unwrap_or(stored.refresh_token);
+            .unwrap_or(stored.refresh_token.clone());
         let account_id = token_account_id(provider, &refreshed).or(stored.account_id.clone());
         let rotated_credential = StoredCredential {
             refresh_token,
@@ -1309,6 +1312,58 @@ mod tests {
             .contains("memory-access-token"));
         let session = auth.authorized(provider, 1).await.unwrap();
         assert_eq!(session.access_token, "memory-access-token");
+    }
+
+    #[tokio::test]
+    async fn failed_reconnect_write_preserves_old_session_and_reports_warning() {
+        let store = Arc::new(MemoryStore {
+            fail_writes: true,
+            ..MemoryStore::default()
+        });
+        let auth =
+            NativeSubscriptionAuth::with_test_store(store.clone(), "http://127.0.0.1".into());
+        let provider = SubscriptionProvider::GrokSubscription;
+        {
+            let mut state = auth.state(provider).lock().await;
+            state.access_token = Some("old-live-access".into());
+            state.account_id = Some("old-account".into());
+            state.access_expires_at = Some(Instant::now() + Duration::from_secs(3600));
+        }
+        let cancellation = CancellationToken::new();
+        auth.inner.logins.lock().unwrap().insert(
+            "synthetic-reconnect-failure".into(),
+            PendingLogin {
+                provider,
+                cancellation: cancellation.clone(),
+            },
+        );
+        assert!(matches!(
+            auth.install_tokens(
+                provider,
+                0,
+                "synthetic-reconnect-failure",
+                &cancellation,
+                TokenResponse {
+                    access_token: "new-access".into(),
+                    refresh_token: Some("new-refresh".into()),
+                    expires_in: Some(3600),
+                    id_token: None,
+                },
+            )
+            .await,
+            Err(AuthError::StorageUnavailable)
+        ));
+        let status = auth.status(provider).await;
+        assert_eq!(status.state, SubscriptionAccountState::SignedIn);
+        assert_eq!(status.account_id.as_deref(), Some("old-account"));
+        assert_eq!(
+            status.message.as_deref(),
+            Some("The operating system could not access the subscription keychain.")
+        );
+        let session = auth.authorized(provider, 0).await.unwrap();
+        assert_eq!(session.access_token, "old-live-access");
+        assert_eq!(store.read_count.load(Ordering::SeqCst), 0);
+        assert_eq!(store.write_count.load(Ordering::SeqCst), 1);
     }
 
     async fn mock_tokens(
