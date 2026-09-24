@@ -31,3 +31,13 @@ tokio-util = { version = "0.7" }
 axum = "0.8"
 schemars = "0.8"
 futures = "0.3"
+
+# Opt-in HTTPS hosting of the standalone browser app.
+axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rcgen = { version = "0.13", features = ["x509-parser"] }
+local-ip-address = "0.6"
+tower-http = { version = "0.6", features = ["fs", "set-header"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

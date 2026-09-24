@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "lan:build": "pnpm --dir ../web build",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

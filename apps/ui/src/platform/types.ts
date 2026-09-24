@@ -37,7 +37,17 @@ export interface FileFilter {
   extensions: string[];
 }
 
+export interface LanAccessStatus {
+  running: boolean;
+  urls: string[];
+  message: string | null;
+}
+
 export interface PlatformBridge {
+  getLanAccessStatus(): Promise<LanAccessStatus>;
+  setLanAccess(enabled: boolean): Promise<LanAccessStatus>;
+  getLanCertificate(): Promise<string>;
+
   readonly capabilities: PlatformCapabilities;
 
   // -- File operations --

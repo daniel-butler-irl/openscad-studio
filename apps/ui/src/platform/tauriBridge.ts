@@ -1,5 +1,6 @@
 import type {
   PlatformBridge,
+  LanAccessStatus,
   PlatformCapabilities,
   FileOpenResult,
   FileFilter,
@@ -20,6 +21,19 @@ const capabilities: PlatformCapabilities = {
 };
 
 export class TauriBridge implements PlatformBridge {
+  async getLanAccessStatus(): Promise<LanAccessStatus> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('get_lan_access_status');
+  }
+  async setLanAccess(enabled: boolean): Promise<LanAccessStatus> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('set_lan_access', { enabled });
+  }
+  async getLanCertificate(): Promise<string> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('get_lan_certificate');
+  }
+
   readonly capabilities = capabilities;
 
   async fileOpen(filters?: FileFilter[]): Promise<FileOpenResult | null> {

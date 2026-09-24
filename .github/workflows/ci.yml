@@ -168,6 +168,11 @@ jobs:
           mkdir -p apps/ui/src-tauri/binaries/OpenSCAD.app/Contents/MacOS
           touch apps/ui/src-tauri/binaries/OpenSCAD.app/Contents/MacOS/OpenSCAD
 
+      - name: Create LAN web resource stub for static checks
+        run: |
+          mkdir -p apps/web/dist
+          touch apps/web/dist/index.html
+
       - name: Check Rust formatting
         working-directory: apps/ui/src-tauri
         run: cargo fmt --check
@@ -175,6 +180,10 @@ jobs:
       - name: Run Clippy
         working-directory: apps/ui/src-tauri
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test LAN HTTPS host
+        working-directory: apps/ui/src-tauri
+        run: cargo test --lib lan::tests
 
       - name: Run Cargo check
         working-directory: apps/ui/src-tauri

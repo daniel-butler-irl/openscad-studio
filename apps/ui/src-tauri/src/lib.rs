@@ -1,5 +1,6 @@
 mod cmd;
 mod history;
+mod lan;
 mod mcp;
 mod types;
 
@@ -89,6 +90,7 @@ pub fn run() {
         .manage(history_state)
         .manage(openscad_state)
         .manage(mcp_state.clone())
+        .manage(lan::LanServerState::default())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             update_editor_state,
@@ -105,6 +107,9 @@ pub fn run() {
             cmd::render::render_init,
             cmd::render::render_native,
             cmd::render::render_cancel,
+            lan::set_lan_access,
+            lan::get_lan_access_status,
+            lan::get_lan_certificate,
             mcp::configure_mcp_server,
             mcp::get_mcp_server_status,
             mcp::mcp_submit_tool_response,

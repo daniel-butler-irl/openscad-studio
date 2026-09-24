@@ -16,6 +16,7 @@ const mockGetDesktopMcpStatus = jest.fn();
 const mockSyncDesktopMcpConfig = jest.fn();
 let platformMock: {
   getLibraryPaths: ReturnType<typeof jest.fn>;
+  getLanAccessStatus: ReturnType<typeof jest.fn>;
   getDefaultProjectsDirectory: ReturnType<typeof jest.fn>;
   pickDirectory: ReturnType<typeof jest.fn>;
   capabilities: { hasFileSystem: boolean };
@@ -89,6 +90,7 @@ describe('SettingsDialog privacy copy', () => {
     jest.clearAllMocks();
     platformMock = {
       getLibraryPaths: jest.fn(async () => []),
+      getLanAccessStatus: jest.fn(async () => ({ running: false, urls: [], message: null })),
       getDefaultProjectsDirectory: jest.fn(async () => '/Users/test/Documents/OpenSCAD Studio'),
       pickDirectory: jest.fn(async () => null),
       capabilities: { hasFileSystem: true },
@@ -400,5 +402,29 @@ describe('SettingsDialog privacy copy', () => {
         enabled: false,
       })
     );
+  });
+  it('offers LAN access in desktop settings', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} });
+    try {
+      render(
+        <ThemeProvider>
+          <SettingsDialog isOpen onClose={() => {}} />
+        </ThemeProvider>
+      );
+      fireEvent.click(screen.getByTestId('settings-nav-lan'));
+      expect(await screen.findByRole('button', { name: 'Start LAN access' })).toBeEnabled();
+      expect(screen.getByText('First connection from an iPad')).toBeVisible();
+    } finally {
+      Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
+    }
+  });
+
+  it('does not offer LAN hosting from a browser', () => {
+    render(
+      <ThemeProvider>
+        <SettingsDialog isOpen onClose={() => {}} />
+      </ThemeProvider>
+    );
+    expect(screen.queryByTestId('settings-nav-lan')).toBeNull();
   });
 });
