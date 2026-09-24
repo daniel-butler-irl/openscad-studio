@@ -56,15 +56,17 @@ export function SubscriptionSettings({ isOpen }: { isOpen: boolean }) {
   const refreshStatuses = useCallback(async () => {
     if (bridge) await refreshSubscriptionStatus();
   }, [bridge]);
+  const hasPendingLogin = Object.values(pendingLogins).some(Boolean);
 
   useEffect(() => {
     if (!isOpen || !bridge) return;
     void refreshStatuses().catch(() => {});
+    if (!hasPendingLogin) return;
     const timer = window.setInterval(() => {
       void refreshStatuses().catch(() => {});
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [bridge, isOpen, refreshStatuses]);
+  }, [bridge, hasPendingLogin, isOpen, refreshStatuses]);
 
   useEffect(() => {
     for (const { id } of PROVIDERS) {
