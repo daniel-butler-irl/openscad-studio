@@ -1,4 +1,10 @@
-import type { PlatformBridge, PlatformCapabilities, FileOpenResult, FileFilter } from './types';
+import type {
+  LanAccessStatus,
+  PlatformBridge,
+  PlatformCapabilities,
+  FileOpenResult,
+  FileFilter,
+} from './types';
 import {
   isOpenScadProjectFilePath,
   OPENSCAD_RENDERABLE_FILE_EXTENSIONS,
@@ -53,6 +59,17 @@ function hasFileSystemAccess(): boolean {
 }
 
 export class WebBridge implements PlatformBridge {
+  async getLanAccessStatus(): Promise<LanAccessStatus> {
+    return { running: false, urls: [], message: null };
+  }
+  async setLanAccess(enabled: boolean): Promise<LanAccessStatus> {
+    void enabled;
+    throw new Error('LAN hosting requires the desktop app.');
+  }
+  async getLanCertificate(): Promise<string> {
+    throw new Error('LAN hosting requires the desktop app.');
+  }
+
   readonly capabilities = capabilities;
   private _hasDirtyState = false;
 

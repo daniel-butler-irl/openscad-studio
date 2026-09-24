@@ -16,6 +16,7 @@ import {
   TbBooks,
   TbShield,
   TbRuler,
+  TbWifi,
 } from 'react-icons/tb';
 import { getPlatform } from '../platform';
 import { applyWorkspacePreset } from '../stores/layoutStore';
@@ -29,6 +30,7 @@ import {
   LibrariesSettings,
   AiSettings,
 } from './settings';
+import { LanAccessSettings } from './settings/LanAccessSettings';
 import type { AiSettingsHandle } from './settings/AiSettings';
 
 export type SettingsSection =
@@ -38,7 +40,8 @@ export type SettingsSection =
   | 'privacy'
   | 'ai'
   | 'libraries'
-  | 'project';
+  | 'project'
+  | 'lan';
 
 interface SettingsDialogProps {
   isOpen: boolean;
@@ -228,7 +231,10 @@ export function SettingsDialog({ isOpen, onClose, initialTab }: SettingsDialogPr
     { key: 'project', label: 'Project', icon: <TbRuler size={16} /> },
     { key: 'privacy', label: 'Privacy', icon: <TbShield size={16} /> },
     ...(isDesktop
-      ? [{ key: 'libraries' as const, label: 'Libraries', icon: <TbBooks size={16} /> }]
+      ? [
+          { key: 'libraries' as const, label: 'Libraries', icon: <TbBooks size={16} /> },
+          { key: 'lan' as const, label: 'LAN Access', icon: <TbWifi size={16} /> },
+        ]
       : []),
     { key: 'ai', label: 'AI Assistant', icon: <TbSparkles size={16} /> },
   ];
@@ -241,6 +247,7 @@ export function SettingsDialog({ isOpen, onClose, initialTab }: SettingsDialogPr
     privacy: 'Privacy',
     libraries: 'Libraries',
     ai: 'AI Assistant',
+    lan: 'LAN Access',
   };
 
   return (
@@ -366,6 +373,7 @@ export function SettingsDialog({ isOpen, onClose, initialTab }: SettingsDialogPr
                 onLocalVimConfigChange={setLocalVimConfig}
               />
             )}
+            {activeSection === 'lan' && isDesktop && <LanAccessSettings />}
             {activeSection === 'privacy' && (
               <PrivacySettings settings={settings} onPrivacyChange={handlePrivacyChange} />
             )}

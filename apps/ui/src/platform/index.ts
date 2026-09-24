@@ -1,5 +1,6 @@
 export type {
   PlatformBridge,
+  LanAccessStatus,
   PlatformCapabilities,
   FileOpenResult,
   FileFilter,
@@ -12,6 +13,7 @@ export { historyService } from './historyService';
 export type { EditorCheckpoint, CheckpointDiff, Diagnostic, ChangeType } from './historyService';
 
 import type {
+  LanAccessStatus,
   ConfirmDialogOptions,
   FileFilter,
   FileOpenResult,
@@ -44,6 +46,17 @@ function createBootstrapCapabilities(): PlatformCapabilities {
 }
 
 class BootstrapBridge implements PlatformBridge {
+  async getLanAccessStatus(): Promise<LanAccessStatus> {
+    return { running: false, urls: [], message: null };
+  }
+  async setLanAccess(enabled: boolean): Promise<LanAccessStatus> {
+    void enabled;
+    throw new Error('LAN hosting requires the desktop app.');
+  }
+  async getLanCertificate(): Promise<string> {
+    throw new Error('LAN hosting requires the desktop app.');
+  }
+
   readonly capabilities = createBootstrapCapabilities();
 
   async fileOpen(filters?: FileFilter[]): Promise<FileOpenResult | null> {

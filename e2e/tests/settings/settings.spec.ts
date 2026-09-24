@@ -98,3 +98,9 @@ test('theme change applies immediately', async ({ app }) => {
 
   await expect.poll(getThemeToken).not.toBe(before);
 });
+
+test('LAN hosting is only offered by the desktop app', async ({ app }) => {
+  test.skip(app.isTauri, 'Browser-only assertion');
+  await openSettings(app.page);
+  await expect(app.page.getByTestId('settings-nav-lan')).toHaveCount(0);
+});
