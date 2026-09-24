@@ -4,8 +4,9 @@
 //! tokens remain in memory. No API returns a credential to the webview.
 
 use super::{
-    AuthorizedSession, LoginKind, SessionError, SubscriptionAccountState, SubscriptionAccountStatus,
-    SubscriptionLoginChallenge, SubscriptionProvider, SubscriptionSessions,
+    AuthorizedSession, LoginKind, SessionError, SubscriptionAccountState,
+    SubscriptionAccountStatus, SubscriptionLoginChallenge, SubscriptionProvider,
+    SubscriptionSessions,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use keyring::Entry;
@@ -60,7 +61,9 @@ impl CredentialStore for KeychainCredentialStore {
     }
 
     fn write(&self, provider: SubscriptionProvider, value: &str) -> Result<(), ()> {
-        credential_entry(provider)?.set_password(value).map_err(|_| ())
+        credential_entry(provider)?
+            .set_password(value)
+            .map_err(|_| ())
     }
 
     fn delete(&self, provider: SubscriptionProvider) -> Result<(), ()> {
@@ -197,7 +200,10 @@ impl NativeSubscriptionAuth {
             inner: Arc::new(AuthInner {
                 http,
                 store,
-                states: [Mutex::new(SessionState::default()), Mutex::new(SessionState::default())],
+                states: [
+                    Mutex::new(SessionState::default()),
+                    Mutex::new(SessionState::default()),
+                ],
                 refresh_locks: [Mutex::new(()), Mutex::new(())],
                 login_start_locks: [Mutex::new(()), Mutex::new(())],
                 logins: StdMutex::new(HashMap::new()),
@@ -209,7 +215,9 @@ impl NativeSubscriptionAuth {
     #[cfg(test)]
     fn with_test_store(store: Arc<dyn CredentialStore>, issuer: String) -> Self {
         let mut auth = Self::with_store(store).expect("test HTTP client");
-        Arc::get_mut(&mut auth.inner).expect("unique test auth").endpoints = EndpointSet {
+        Arc::get_mut(&mut auth.inner)
+            .expect("unique test auth")
+            .endpoints = EndpointSet {
             codex_issuer: issuer.clone(),
             codex_callback: format!("{issuer}/auth/callback"),
             grok_issuer: issuer,
@@ -227,7 +235,9 @@ impl NativeSubscriptionAuth {
         &self,
         provider: SubscriptionProvider,
     ) -> Result<SubscriptionLoginChallenge, AuthError> {
-        let _start = self.inner.login_start_locks[provider_index(provider)].lock().await;
+        let _start = self.inner.login_start_locks[provider_index(provider)]
+            .lock()
+            .await;
         let starting_generation = self.state(provider).lock().await.generation;
         if self
             .inner
@@ -270,7 +280,15 @@ impl NativeSubscriptionAuth {
                 result = future => result,
             };
             if let Ok(tokens) = result {
-                let _ = auth.install_tokens(provider, starting_generation, &login_id, &task_cancel, tokens).await;
+                let _ = auth
+                    .install_tokens(
+                        provider,
+                        starting_generation,
+                        &login_id,
+                        &task_cancel,
+                        tokens,
+                    )
+                    .await;
             }
             if let Ok(mut logins) = auth.inner.logins.lock() {
                 logins.remove(&login_id);
@@ -291,7 +309,10 @@ impl NativeSubscriptionAuth {
             .logins
             .lock()
             .map_err(|_| AuthError::InvalidResponse)?;
-        if logins.get(login_id).is_some_and(|pending| pending.provider == provider) {
+        if logins
+            .get(login_id)
+            .is_some_and(|pending| pending.provider == provider)
+        {
             if let Some(pending) = logins.remove(login_id) {
                 pending.cancellation.cancel();
             }
@@ -299,16 +320,18 @@ impl NativeSubscriptionAuth {
         Ok(())
     }
 
-    pub async fn status(
-        &self,
-        provider: SubscriptionProvider,
-    ) -> SubscriptionAccountStatus {
+    pub async fn status(&self, provider: SubscriptionProvider) -> SubscriptionAccountStatus {
         let (generation, account_id, in_memory, stored) = loop {
             let before = self.state(provider).lock().await.generation;
             let stored = self.read_stored(provider).await.ok().flatten().is_some();
             let state = self.state(provider).lock().await;
             if state.generation == before {
-                break (state.generation, state.account_id.clone(), state.access_token.is_some(), stored);
+                break (
+                    state.generation,
+                    state.account_id.clone(),
+                    state.access_token.is_some(),
+                    stored,
+                );
             }
         };
         let signed_in = in_memory || stored;
@@ -335,7 +358,13 @@ impl NativeSubscriptionAuth {
 
     async fn start_grok_device_login(
         &self,
-    ) -> Result<(SubscriptionLoginChallenge, BoxFuture<'static, Result<TokenResponse, AuthError>>), AuthError> {
+    ) -> Result<
+        (
+            SubscriptionLoginChallenge,
+            BoxFuture<'static, Result<TokenResponse, AuthError>>,
+        ),
+        AuthError,
+    > {
         let url = format!("{}/oauth2/device/code", self.inner.endpoints.grok_issuer);
         let response = self
             .inner
@@ -345,7 +374,10 @@ impl NativeSubscriptionAuth {
             .header("x-grok-client-surface", "desktop")
             .form(&[
                 ("client_id", GROK_CLIENT_ID),
-                ("scope", "openid profile email offline_access grok-cli:access api:access"),
+                (
+                    "scope",
+                    "openid profile email offline_access grok-cli:access api:access",
+                ),
             ])
             .send()
             .await
@@ -388,13 +420,21 @@ impl NativeSubscriptionAuth {
                     .await
                     .map_err(|_| AuthError::Network)?;
                 if response.status().is_success() {
-                    return response.json().await.map_err(|_| AuthError::InvalidResponse);
+                    return response
+                        .json()
+                        .await
+                        .map_err(|_| AuthError::InvalidResponse);
                 }
                 let error = oauth_error(response).await;
                 match error.as_deref() {
                     Some("authorization_pending") => continue,
-                    Some("slow_down") => poll_interval = (poll_interval + Duration::from_secs(5)).min(Duration::from_secs(30)),
-                    Some("access_denied" | "authorization_denied") => return Err(AuthError::Denied),
+                    Some("slow_down") => {
+                        poll_interval =
+                            (poll_interval + Duration::from_secs(5)).min(Duration::from_secs(30))
+                    }
+                    Some("access_denied" | "authorization_denied") => {
+                        return Err(AuthError::Denied)
+                    }
                     Some("expired_token") => return Err(AuthError::Expired),
                     _ => return Err(AuthError::Network),
                 }
@@ -405,16 +445,26 @@ impl NativeSubscriptionAuth {
 
     async fn start_codex_browser_login(
         &self,
-    ) -> Result<(SubscriptionLoginChallenge, BoxFuture<'static, Result<TokenResponse, AuthError>>), AuthError> {
+    ) -> Result<
+        (
+            SubscriptionLoginChallenge,
+            BoxFuture<'static, Result<TokenResponse, AuthError>>,
+        ),
+        AuthError,
+    > {
         let listener = TcpListener::bind("127.0.0.1:1455")
             .await
             .map_err(|_| AuthError::Network)?;
         let state = Uuid::new_v4().simple().to_string();
         let verifier = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-        let mut authorization = Url::parse(&format!("{}/oauth/authorize", self.inner.endpoints.codex_issuer))
-            .map_err(|_| AuthError::InvalidResponse)?;
-        authorization.query_pairs_mut()
+        let mut authorization = Url::parse(&format!(
+            "{}/oauth/authorize",
+            self.inner.endpoints.codex_issuer
+        ))
+        .map_err(|_| AuthError::InvalidResponse)?;
+        authorization
+            .query_pairs_mut()
             .append_pair("response_type", "code")
             .append_pair("client_id", CODEX_CLIENT_ID)
             .append_pair("redirect_uri", &self.inner.endpoints.codex_callback)
@@ -435,23 +485,33 @@ impl NativeSubscriptionAuth {
             let deadline = Instant::now() + callback_timeout;
             loop {
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() { return Err(AuthError::Expired); }
+                if remaining.is_zero() {
+                    return Err(AuthError::Expired);
+                }
                 let (mut socket, _) = timeout(remaining, listener.accept())
-                    .await.map_err(|_| AuthError::Expired)?
+                    .await
+                    .map_err(|_| AuthError::Expired)?
                     .map_err(|_| AuthError::Network)?;
                 let mut bytes = Vec::with_capacity(1024);
                 let mut chunk = [0u8; 1024];
                 while bytes.len() < 8192 && !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-                    let read_timeout = Duration::from_secs(3).min(deadline.saturating_duration_since(Instant::now()));
+                    let read_timeout = Duration::from_secs(3)
+                        .min(deadline.saturating_duration_since(Instant::now()));
                     let count = match timeout(read_timeout, socket.read(&mut chunk)).await {
                         Ok(Ok(count)) => count,
                         _ => 0,
                     };
-                    if count == 0 { break; }
+                    if count == 0 {
+                        break;
+                    }
                     bytes.extend_from_slice(&chunk[..count]);
                 }
                 let request = String::from_utf8_lossy(&bytes);
-                let mut fields = request.lines().next().unwrap_or_default().split_whitespace();
+                let mut fields = request
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .split_whitespace();
                 let method = fields.next().unwrap_or_default();
                 let target = fields.next().unwrap_or_default();
                 if method != "GET" || target.is_empty() {
@@ -461,7 +521,8 @@ impl NativeSubscriptionAuth {
                 let callback_url = match Url::parse(&format!("http://localhost:1455{target}")) {
                     Ok(url) => url,
                     Err(_) => {
-                        respond_callback(&mut socket, 400, "Invalid sign-in callback request.").await;
+                        respond_callback(&mut socket, 400, "Invalid sign-in callback request.")
+                            .await;
                         continue;
                     }
                 };
@@ -469,20 +530,33 @@ impl NativeSubscriptionAuth {
                     respond_callback(&mut socket, 404, "Sign-in callback not found.").await;
                     continue;
                 }
-                let params = callback_url.query_pairs().into_owned().collect::<HashMap<_, _>>();
+                let params = callback_url
+                    .query_pairs()
+                    .into_owned()
+                    .collect::<HashMap<_, _>>();
                 if params.get("state").map(String::as_str) != Some(state.as_str()) {
                     respond_callback(&mut socket, 400, "Sign-in state did not match.").await;
                     continue;
                 }
                 if let Some(error) = params.get("error") {
                     respond_callback(&mut socket, 400, "Sign-in was denied.").await;
-                    return Err(if error == "access_denied" { AuthError::Denied } else { AuthError::InvalidResponse });
+                    return Err(if error == "access_denied" {
+                        AuthError::Denied
+                    } else {
+                        AuthError::InvalidResponse
+                    });
                 }
                 let Some(code) = params.get("code").cloned() else {
-                    respond_callback(&mut socket, 400, "Sign-in callback did not include a code.").await;
+                    respond_callback(&mut socket, 400, "Sign-in callback did not include a code.")
+                        .await;
                     continue;
                 };
-                respond_callback(&mut socket, 200, "Sign-in complete. You can return to OpenSCAD Studio.").await;
+                respond_callback(
+                    &mut socket,
+                    200,
+                    "Authorization received. Return to Studio to finish sign-in.",
+                )
+                .await;
                 return Ok((code, verifier));
             }
         });
@@ -491,7 +565,8 @@ impl NativeSubscriptionAuth {
         let http = self.inner.http.clone();
         let future = Box::pin(async move {
             let (code, verifier) = callback.await?;
-            let response = http.post(format!("{issuer}/oauth/token"))
+            let response = http
+                .post(format!("{issuer}/oauth/token"))
                 .form(&[
                     ("grant_type", "authorization_code"),
                     ("client_id", CODEX_CLIENT_ID),
@@ -499,7 +574,9 @@ impl NativeSubscriptionAuth {
                     ("redirect_uri", redirect_uri.as_str()),
                     ("code_verifier", verifier.as_str()),
                 ])
-                .send().await.map_err(|_| AuthError::Network)?;
+                .send()
+                .await
+                .map_err(|_| AuthError::Network)?;
             json_response(response).await
         }) as BoxFuture<'static, Result<TokenResponse, AuthError>>;
         Ok((result_challenge, future))
@@ -507,11 +584,22 @@ impl NativeSubscriptionAuth {
 
     async fn start_codex_device_login(
         &self,
-    ) -> Result<(SubscriptionLoginChallenge, BoxFuture<'static, Result<TokenResponse, AuthError>>), AuthError> {
+    ) -> Result<
+        (
+            SubscriptionLoginChallenge,
+            BoxFuture<'static, Result<TokenResponse, AuthError>>,
+        ),
+        AuthError,
+    > {
         let issuer = self.inner.endpoints.codex_issuer.clone();
-        let response = self.inner.http.post(format!("{issuer}/api/accounts/deviceauth/usercode"))
+        let response = self
+            .inner
+            .http
+            .post(format!("{issuer}/api/accounts/deviceauth/usercode"))
             .json(&serde_json::json!({"client_id": CODEX_CLIENT_ID}))
-            .send().await.map_err(|_| AuthError::Network)?;
+            .send()
+            .await
+            .map_err(|_| AuthError::Network)?;
         let device: CodexDeviceStart = json_response(response).await?;
         let lifetime = Duration::from_secs(device.expires_in.unwrap_or(300).clamp(1, 900));
         let deadline = Instant::now() + lifetime;
@@ -530,25 +618,35 @@ impl NativeSubscriptionAuth {
         let future = Box::pin(async move {
             loop {
                 sleep(interval).await;
-                if Instant::now() >= deadline { return Err(AuthError::Expired); }
+                if Instant::now() >= deadline {
+                    return Err(AuthError::Expired);
+                }
                 let response = http.post(format!("{issuer}/api/accounts/deviceauth/token"))
                     .json(&serde_json::json!({"device_auth_id": device_auth_id, "user_code": user_code}))
                     .send().await.map_err(|_| AuthError::Network)?;
-                if response.status() == StatusCode::FORBIDDEN || response.status() == StatusCode::NOT_FOUND {
+                if response.status() == StatusCode::FORBIDDEN
+                    || response.status() == StatusCode::NOT_FOUND
+                {
                     continue;
                 }
                 let poll: CodexDevicePoll = json_response(response).await?;
                 let code = poll.authorization_code.ok_or(AuthError::InvalidResponse)?;
                 let verifier = poll.code_verifier.ok_or(AuthError::InvalidResponse)?;
-                let token_response = http.post(format!("{issuer}/oauth/token"))
+                let token_response = http
+                    .post(format!("{issuer}/oauth/token"))
                     .form(&[
                         ("grant_type", "authorization_code"),
                         ("client_id", CODEX_CLIENT_ID),
                         ("code", code.as_str()),
-                        ("redirect_uri", "https://auth.openai.com/deviceauth/callback"),
+                        (
+                            "redirect_uri",
+                            "https://auth.openai.com/deviceauth/callback",
+                        ),
                         ("code_verifier", verifier.as_str()),
                     ])
-                    .send().await.map_err(|_| AuthError::Network)?;
+                    .send()
+                    .await
+                    .map_err(|_| AuthError::Network)?;
                 return json_response(token_response).await;
             }
         }) as BoxFuture<'static, Result<TokenResponse, AuthError>>;
@@ -563,47 +661,79 @@ impl NativeSubscriptionAuth {
         cancellation: &CancellationToken,
         tokens: TokenResponse,
     ) -> Result<(), AuthError> {
-        if tokens.access_token.is_empty() { return Err(AuthError::InvalidResponse); }
+        if tokens.access_token.is_empty() {
+            return Err(AuthError::InvalidResponse);
+        }
         let account_id = token_account_id(&tokens);
-        let refresh_token = tokens.refresh_token.as_ref()
+        let refresh_token = tokens
+            .refresh_token
+            .as_ref()
             .filter(|value| !value.is_empty())
             .cloned()
             .ok_or(AuthError::InvalidResponse)?;
-        let encoded = serde_json::to_string(&StoredCredential { refresh_token, account_id: account_id.clone() })
-            .map_err(|_| AuthError::InvalidResponse)?;
+        let encoded = serde_json::to_string(&StoredCredential {
+            refresh_token,
+            account_id: account_id.clone(),
+        })
+        .map_err(|_| AuthError::InvalidResponse)?;
         let mut state = self.state(provider).lock().await;
-        if state.generation != expected_generation || cancellation.is_cancelled() { return Err(AuthError::Cancelled); }
-        if !self.inner.logins.lock().map_err(|_| AuthError::InvalidResponse)?
-            .get(login_id).is_some_and(|pending| pending.provider == provider && !pending.cancellation.is_cancelled()) {
+        if state.generation != expected_generation || cancellation.is_cancelled() {
+            return Err(AuthError::Cancelled);
+        }
+        if !self
+            .inner
+            .logins
+            .lock()
+            .map_err(|_| AuthError::InvalidResponse)?
+            .get(login_id)
+            .is_some_and(|pending| {
+                pending.provider == provider && !pending.cancellation.is_cancelled()
+            })
+        {
             return Err(AuthError::Cancelled);
         }
         self.write_stored(provider, encoded).await?;
         state.generation = state.generation.wrapping_add(1);
         state.access_token = Some(tokens.access_token);
         state.account_id = account_id;
-        state.access_expires_at = Some(Instant::now() + Duration::from_secs(tokens.expires_in.unwrap_or(3600).saturating_sub(30)));
+        state.access_expires_at = Some(
+            Instant::now()
+                + Duration::from_secs(tokens.expires_in.unwrap_or(3600).saturating_sub(30)),
+        );
         Ok(())
     }
 
-    async fn read_stored(&self, provider: SubscriptionProvider) -> Result<Option<StoredCredential>, AuthError> {
+    async fn read_stored(
+        &self,
+        provider: SubscriptionProvider,
+    ) -> Result<Option<StoredCredential>, AuthError> {
         let store = self.inner.store.clone();
         let value = tokio::task::spawn_blocking(move || store.read(provider))
-            .await.map_err(|_| AuthError::StorageUnavailable)?
+            .await
+            .map_err(|_| AuthError::StorageUnavailable)?
             .map_err(|_| AuthError::StorageUnavailable)?;
-        value.map(|value| serde_json::from_str(&value).map_err(|_| AuthError::StorageUnavailable)).transpose()
+        value
+            .map(|value| serde_json::from_str(&value).map_err(|_| AuthError::StorageUnavailable))
+            .transpose()
     }
 
-    async fn write_stored(&self, provider: SubscriptionProvider, value: String) -> Result<(), AuthError> {
+    async fn write_stored(
+        &self,
+        provider: SubscriptionProvider,
+        value: String,
+    ) -> Result<(), AuthError> {
         let store = self.inner.store.clone();
         tokio::task::spawn_blocking(move || store.write(provider, &value))
-            .await.map_err(|_| AuthError::StorageUnavailable)?
+            .await
+            .map_err(|_| AuthError::StorageUnavailable)?
             .map_err(|_| AuthError::StorageUnavailable)
     }
 
     async fn delete_stored(&self, provider: SubscriptionProvider) -> Result<(), AuthError> {
         let store = self.inner.store.clone();
         tokio::task::spawn_blocking(move || store.delete(provider))
-            .await.map_err(|_| AuthError::StorageUnavailable)?
+            .await
+            .map_err(|_| AuthError::StorageUnavailable)?
             .map_err(|_| AuthError::StorageUnavailable)
     }
 
@@ -613,83 +743,151 @@ impl NativeSubscriptionAuth {
         expected_generation: u64,
         used_access_token: Option<&str>,
     ) -> Result<AuthorizedSession, SessionError> {
-        let _refresh = self.inner.refresh_locks[provider_index(provider)].lock().await;
+        let _refresh = self.inner.refresh_locks[provider_index(provider)]
+            .lock()
+            .await;
         let (generation, existing_access, existing_expiry) = {
             let state = self.state(provider).lock().await;
-            if state.generation != expected_generation { return Err(SessionError::StaleGeneration); }
-            (state.generation, state.access_token.clone(), state.access_expires_at)
+            if state.generation != expected_generation {
+                return Err(SessionError::StaleGeneration);
+            }
+            (
+                state.generation,
+                state.access_token.clone(),
+                state.access_expires_at,
+            )
         };
         if let (Some(access), Some(expiry)) = (&existing_access, existing_expiry) {
             let still_valid = expiry > Instant::now();
-            let different_from_used = used_access_token.map(|used| used != access).unwrap_or(false);
+            let different_from_used = used_access_token
+                .map(|used| used != access)
+                .unwrap_or(false);
             if still_valid && (used_access_token.is_none() || different_from_used) {
                 let state = self.state(provider).lock().await;
-                if state.generation != generation { return Err(SessionError::StaleGeneration); }
-                return Ok(session_from_state(&state)?);
+                if state.generation != generation {
+                    return Err(SessionError::StaleGeneration);
+                }
+                return session_from_state(&state);
             }
         }
-        let stored = self.read_stored(provider).await.map_err(|_| SessionError::StorageUnavailable)?
+        let stored = self
+            .read_stored(provider)
+            .await
+            .map_err(|_| SessionError::StorageUnavailable)?
             .ok_or(SessionError::SignedOut)?;
-        let refreshed = self.exchange_refresh(provider, &stored.refresh_token).await
+        let refreshed = self
+            .exchange_refresh(provider, &stored.refresh_token)
+            .await
             .map_err(|_| SessionError::RefreshRejected)?;
-        let refresh_token = refreshed.refresh_token.clone().unwrap_or(stored.refresh_token);
+        if refreshed.access_token.trim().is_empty()
+            || refreshed
+                .refresh_token
+                .as_ref()
+                .is_some_and(|token| token.trim().is_empty())
+        {
+            return Err(SessionError::RefreshRejected);
+        }
+        let refresh_token = refreshed
+            .refresh_token
+            .clone()
+            .unwrap_or(stored.refresh_token);
         let account_id = token_account_id(&refreshed).or(stored.account_id);
-        let encoded = serde_json::to_string(&StoredCredential { refresh_token, account_id: account_id.clone() })
-            .map_err(|_| SessionError::StorageUnavailable)?;
+        let encoded = serde_json::to_string(&StoredCredential {
+            refresh_token,
+            account_id: account_id.clone(),
+        })
+        .map_err(|_| SessionError::StorageUnavailable)?;
         let mut state = self.state(provider).lock().await;
-        if state.generation != expected_generation { return Err(SessionError::StaleGeneration); }
-        self.write_stored(provider, encoded).await.map_err(|_| SessionError::StorageUnavailable)?;
+        if state.generation != expected_generation {
+            return Err(SessionError::StaleGeneration);
+        }
+        self.write_stored(provider, encoded)
+            .await
+            .map_err(|_| SessionError::StorageUnavailable)?;
         state.access_token = Some(refreshed.access_token);
         state.account_id = account_id;
-        state.access_expires_at = Some(Instant::now() + Duration::from_secs(refreshed.expires_in.unwrap_or(3600).saturating_sub(30)));
+        state.access_expires_at = Some(
+            Instant::now()
+                + Duration::from_secs(refreshed.expires_in.unwrap_or(3600).saturating_sub(30)),
+        );
         session_from_state(&state)
     }
 
-    async fn exchange_refresh(&self, provider: SubscriptionProvider, refresh_token: &str) -> Result<TokenResponse, AuthError> {
+    async fn exchange_refresh(
+        &self,
+        provider: SubscriptionProvider,
+        refresh_token: &str,
+    ) -> Result<TokenResponse, AuthError> {
         let (url, client_id) = match provider {
-            SubscriptionProvider::CodexSubscription => (format!("{}/oauth/token", self.inner.endpoints.codex_issuer), CODEX_CLIENT_ID),
-            SubscriptionProvider::GrokSubscription => (format!("{}/oauth2/token", self.inner.endpoints.grok_issuer), GROK_CLIENT_ID),
+            SubscriptionProvider::CodexSubscription => (
+                format!("{}/oauth/token", self.inner.endpoints.codex_issuer),
+                CODEX_CLIENT_ID,
+            ),
+            SubscriptionProvider::GrokSubscription => (
+                format!("{}/oauth2/token", self.inner.endpoints.grok_issuer),
+                GROK_CLIENT_ID,
+            ),
         };
-        let response = self.inner.http.post(url)
-            .form(&[("grant_type", "refresh_token"), ("client_id", client_id), ("refresh_token", refresh_token)])
-            .send().await.map_err(|_| AuthError::Network)?;
+        let response = self
+            .inner
+            .http
+            .post(url)
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("client_id", client_id),
+                ("refresh_token", refresh_token),
+            ])
+            .send()
+            .await
+            .map_err(|_| AuthError::Network)?;
         json_response(response).await
     }
 }
 
 impl SubscriptionSessions for NativeSubscriptionAuth {
-    fn authorized(&self, provider: SubscriptionProvider, expected_generation: u64) -> impl Future<Output = Result<AuthorizedSession, SessionError>> + Send {
+    fn authorized(
+        &self,
+        provider: SubscriptionProvider,
+        expected_generation: u64,
+    ) -> impl Future<Output = Result<AuthorizedSession, SessionError>> + Send {
         self.refresh_locked(provider, expected_generation, None)
     }
 
-    fn refresh_after_unauthorized(&self, provider: SubscriptionProvider, expected_generation: u64, used_access_token: &str) -> impl Future<Output = Result<AuthorizedSession, SessionError>> + Send {
+    fn refresh_after_unauthorized(
+        &self,
+        provider: SubscriptionProvider,
+        expected_generation: u64,
+        used_access_token: &str,
+    ) -> impl Future<Output = Result<AuthorizedSession, SessionError>> + Send {
         self.refresh_locked(provider, expected_generation, Some(used_access_token))
     }
 
-    fn generation(&self, provider: SubscriptionProvider) -> impl Future<Output = u64> + Send {
-        async move { self.state(provider).lock().await.generation }
+    async fn generation(&self, provider: SubscriptionProvider) -> u64 {
+        self.state(provider).lock().await.generation
     }
 
-    fn sign_out(&self, provider: SubscriptionProvider) -> impl Future<Output = Result<u64, SessionError>> + Send {
-        async move {
-            let mut state = self.state(provider).lock().await;
-            state.generation = state.generation.wrapping_add(1);
-            state.access_token = None;
-            state.account_id = None;
-            state.access_expires_at = None;
-            let generation = state.generation;
-            self.cancel_provider_logins(provider).map_err(|_| SessionError::StorageUnavailable)?;
-            self.delete_stored(provider).await.map_err(|_| SessionError::StorageUnavailable)?;
-            drop(state);
-            Ok(generation)
-        }
+    async fn sign_out(&self, provider: SubscriptionProvider) -> Result<u64, SessionError> {
+        let mut state = self.state(provider).lock().await;
+        state.generation = state.generation.wrapping_add(1);
+        state.access_token = None;
+        state.account_id = None;
+        state.access_expires_at = None;
+        let generation = state.generation;
+        self.cancel_provider_logins(provider)
+            .map_err(|_| SessionError::StorageUnavailable)?;
+        self.delete_stored(provider)
+            .await
+            .map_err(|_| SessionError::StorageUnavailable)?;
+        drop(state);
+        Ok(generation)
     }
 }
 
 impl NativeSubscriptionAuth {
     fn cancel_provider_logins(&self, provider: SubscriptionProvider) -> Result<(), ()> {
         let mut logins = self.inner.logins.lock().map_err(|_| ())?;
-        let ids = logins.iter()
+        let ids = logins
+            .iter()
             .filter_map(|(id, pending)| (pending.provider == provider).then_some(id.clone()))
             .collect::<Vec<_>>();
         for id in ids {
@@ -702,7 +900,10 @@ impl NativeSubscriptionAuth {
 }
 
 fn provider_index(provider: SubscriptionProvider) -> usize {
-    match provider { SubscriptionProvider::CodexSubscription => 0, SubscriptionProvider::GrokSubscription => 1 }
+    match provider {
+        SubscriptionProvider::CodexSubscription => 0,
+        SubscriptionProvider::GrokSubscription => 1,
+    }
 }
 
 fn session_from_state(state: &SessionState) -> Result<AuthorizedSession, SessionError> {
@@ -719,11 +920,18 @@ async fn json_response<T: for<'de> Deserialize<'de>>(response: Response) -> Resu
         let _ = oauth_error(response).await;
         return Err(AuthError::Network);
     }
-    response.json().await.map_err(|_| AuthError::InvalidResponse)
+    response
+        .json()
+        .await
+        .map_err(|_| AuthError::InvalidResponse)
 }
 
 async fn oauth_error(response: Response) -> Option<String> {
-    response.json::<OAuthError>().await.ok().and_then(|error| error.error)
+    response
+        .json::<OAuthError>()
+        .await
+        .ok()
+        .and_then(|error| error.error)
 }
 
 fn validate_verification_url(value: &str) -> Result<(), AuthError> {
@@ -732,7 +940,12 @@ fn validate_verification_url(value: &str) -> Result<(), AuthError> {
     if url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "localhost")) {
         return Ok(());
     }
-    if url.scheme() == "https" && matches!(url.host_str(), Some("auth.x.ai" | "accounts.x.ai" | "auth.openai.com" | "chatgpt.com")) {
+    if url.scheme() == "https"
+        && matches!(
+            url.host_str(),
+            Some("auth.x.ai" | "accounts.x.ai" | "auth.openai.com" | "chatgpt.com")
+        )
+    {
         Ok(())
     } else {
         Err(AuthError::InvalidResponse)
@@ -741,7 +954,12 @@ fn validate_verification_url(value: &str) -> Result<(), AuthError> {
 
 async fn respond_callback(socket: &mut tokio::net::TcpStream, status: u16, message: &str) {
     let body = format!("<!doctype html><title>OpenSCAD Studio</title><p>{message}</p>");
-    let reason = match status { 200 => "OK", 400 => "Bad Request", 404 => "Not Found", _ => "Error" };
+    let reason = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        404 => "Not Found",
+        _ => "Error",
+    };
     let response = format!("HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
     let _ = socket.write_all(response.as_bytes()).await;
 }
@@ -751,7 +969,8 @@ fn token_account_id(tokens: &TokenResponse) -> Option<String> {
     let payload = id_token.split('.').nth(1)?;
     let json = URL_SAFE_NO_PAD.decode(payload).ok()?;
     let claims: serde_json::Value = serde_json::from_slice(&json).ok()?;
-    claims.get("https://api.openai.com/auth")
+    claims
+        .get("https://api.openai.com/auth")
         .and_then(|auth| auth.get("chatgpt_account_id"))
         .and_then(serde_json::Value::as_str)
         .or_else(|| claims.get("sub").and_then(serde_json::Value::as_str))
@@ -759,16 +978,20 @@ fn token_account_id(tokens: &TokenResponse) -> Option<String> {
 }
 
 fn epoch_millis_after(duration: Duration) -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default()
-        .saturating_add(duration).as_millis().min(u64::MAX as u128) as u64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .saturating_add(duration)
+        .as_millis()
+        .min(u64::MAX as u128) as u64
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::{net::TcpListener, sync::oneshot};
     use tokio::task::JoinHandle;
+    use tokio::{net::TcpListener, sync::oneshot};
 
     #[derive(Default)]
     struct MemoryStore {
@@ -778,28 +1001,49 @@ mod tests {
 
     impl CredentialStore for MemoryStore {
         fn read(&self, provider: SubscriptionProvider) -> Result<Option<String>, ()> {
-            Ok(self.values.lock().map_err(|_| ())?.get(provider_key(provider)).cloned())
+            Ok(self
+                .values
+                .lock()
+                .map_err(|_| ())?
+                .get(provider_key(provider))
+                .cloned())
         }
         fn write(&self, provider: SubscriptionProvider, value: &str) -> Result<(), ()> {
-            if self.fail_writes { return Err(()); }
-            self.values.lock().map_err(|_| ())?.insert(provider_key(provider), value.to_owned());
+            if self.fail_writes {
+                return Err(());
+            }
+            self.values
+                .lock()
+                .map_err(|_| ())?
+                .insert(provider_key(provider), value.to_owned());
             Ok(())
         }
         fn delete(&self, provider: SubscriptionProvider) -> Result<(), ()> {
-            self.values.lock().map_err(|_| ())?.remove(provider_key(provider));
+            self.values
+                .lock()
+                .map_err(|_| ())?
+                .remove(provider_key(provider));
             Ok(())
         }
     }
 
     fn stored_refresh(value: &str) -> String {
-        serde_json::to_string(&StoredCredential { refresh_token: value.into(), account_id: None }).unwrap()
+        serde_json::to_string(&StoredCredential {
+            refresh_token: value.into(),
+            account_id: None,
+        })
+        .unwrap()
     }
 
-    async fn mock_tokens(responses: Vec<&'static str>) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
+    async fn mock_tokens(
+        responses: Vec<&'static str>,
+    ) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
         mock_http_sequence(responses.into_iter().map(|body| ("200 OK", body)).collect()).await
     }
 
-    async fn mock_http_sequence(responses: Vec<(&'static str, &'static str)>) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
+    async fn mock_http_sequence(
+        responses: Vec<(&'static str, &'static str)>,
+    ) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let issuer = format!("http://{}", listener.local_addr().unwrap());
         let count = Arc::new(AtomicUsize::new(0));
@@ -817,19 +1061,18 @@ mod tests {
         (issuer, count, task)
     }
 
-    const FIRST: &str = r#"{"access_token":"access-one","refresh_token":"refresh-one","expires_in":3600}"#;
-    const ROTATED: &str = r#"{"access_token":"access-two","refresh_token":"refresh-two","expires_in":3600}"#;
+    const FIRST: &str =
+        r#"{"access_token":"access-one","refresh_token":"refresh-one","expires_in":3600}"#;
+    const ROTATED: &str =
+        r#"{"access_token":"access-two","refresh_token":"refresh-two","expires_in":3600}"#;
     const DEVICE_START: &str = r#"{"device_code":"opaque-device","user_code":"ABCD-EFGH","verification_uri":"http://127.0.0.1:9999/verify","expires_in":60,"interval":1}"#;
 
-    fn auth_with_stored_refresh(issuer: String) -> (NativeSubscriptionAuth, Arc<MemoryStore>) {
-        let store = Arc::new(MemoryStore::default());
-        store.write(SubscriptionProvider::GrokSubscription, &stored_refresh("refresh-old")).unwrap();
-        (NativeSubscriptionAuth::with_test_store(store.clone(), issuer), store)
-    }
-
     async fn send_callback(target: &str) -> String {
-        let mut stream = tokio::net::TcpStream::connect("127.0.0.1:1455").await.unwrap();
-        let request = format!("GET {target} HTTP/1.1\r\nHost: localhost:1455\r\nConnection: close\r\n\r\n");
+        let mut stream = tokio::net::TcpStream::connect("127.0.0.1:1455")
+            .await
+            .unwrap();
+        let request =
+            format!("GET {target} HTTP/1.1\r\nHost: localhost:1455\r\nConnection: close\r\n\r\n");
         stream.write_all(request.as_bytes()).await.unwrap();
         let mut response = vec![0; 1024];
         let count = stream.read(&mut response).await.unwrap();
@@ -840,16 +1083,30 @@ mod tests {
     async fn restart_restores_refresh_credential_and_rotates_it() {
         let (issuer, count, server) = mock_tokens(vec![FIRST]).await;
         let store = Arc::new(MemoryStore::default());
-        store.write(SubscriptionProvider::GrokSubscription, &stored_refresh("refresh-old")).unwrap();
+        store
+            .write(
+                SubscriptionProvider::GrokSubscription,
+                &stored_refresh("refresh-old"),
+            )
+            .unwrap();
         let auth = NativeSubscriptionAuth::with_test_store(store.clone(), issuer);
 
         let status = auth.status(SubscriptionProvider::GrokSubscription).await;
         assert!(matches!(status.state, SubscriptionAccountState::SignedIn));
         assert_eq!(status.generation, 0);
-        let session = auth.authorized(SubscriptionProvider::GrokSubscription, 0).await.unwrap();
+        let session = auth
+            .authorized(SubscriptionProvider::GrokSubscription, 0)
+            .await
+            .unwrap();
         assert_eq!(session.access_token, "access-one");
         assert_eq!(count.load(Ordering::SeqCst), 1);
-        assert_eq!(store.read(SubscriptionProvider::GrokSubscription).unwrap().unwrap(), stored_refresh("refresh-one"));
+        assert_eq!(
+            store
+                .read(SubscriptionProvider::GrokSubscription)
+                .unwrap()
+                .unwrap(),
+            stored_refresh("refresh-one")
+        );
         server.await.unwrap();
     }
 
@@ -857,17 +1114,39 @@ mod tests {
     async fn concurrent_unauthorized_calls_share_one_rotating_refresh() {
         let (issuer, count, server) = mock_tokens(vec![FIRST, ROTATED]).await;
         let store = Arc::new(MemoryStore::default());
-        store.write(SubscriptionProvider::GrokSubscription, &stored_refresh("refresh-old")).unwrap();
+        store
+            .write(
+                SubscriptionProvider::GrokSubscription,
+                &stored_refresh("refresh-old"),
+            )
+            .unwrap();
         let auth = NativeSubscriptionAuth::with_test_store(store.clone(), issuer);
-        let initial = auth.authorized(SubscriptionProvider::GrokSubscription, 0).await.unwrap();
+        let initial = auth
+            .authorized(SubscriptionProvider::GrokSubscription, 0)
+            .await
+            .unwrap();
         let (left, right) = tokio::join!(
-            auth.refresh_after_unauthorized(SubscriptionProvider::GrokSubscription, 0, &initial.access_token),
-            auth.refresh_after_unauthorized(SubscriptionProvider::GrokSubscription, 0, &initial.access_token),
+            auth.refresh_after_unauthorized(
+                SubscriptionProvider::GrokSubscription,
+                0,
+                &initial.access_token
+            ),
+            auth.refresh_after_unauthorized(
+                SubscriptionProvider::GrokSubscription,
+                0,
+                &initial.access_token
+            ),
         );
         assert_eq!(left.unwrap().access_token, "access-two");
         assert_eq!(right.unwrap().access_token, "access-two");
         assert_eq!(count.load(Ordering::SeqCst), 2);
-        assert_eq!(store.read(SubscriptionProvider::GrokSubscription).unwrap().unwrap(), stored_refresh("refresh-two"));
+        assert_eq!(
+            store
+                .read(SubscriptionProvider::GrokSubscription)
+                .unwrap()
+                .unwrap(),
+            stored_refresh("refresh-two")
+        );
         server.await.unwrap();
     }
 
@@ -887,28 +1166,59 @@ mod tests {
             socket.write_all(response.as_bytes()).await.unwrap();
         });
         let store = Arc::new(MemoryStore::default());
-        store.write(SubscriptionProvider::GrokSubscription, &stored_refresh("refresh-old")).unwrap();
+        store
+            .write(
+                SubscriptionProvider::GrokSubscription,
+                &stored_refresh("refresh-old"),
+            )
+            .unwrap();
         let auth = NativeSubscriptionAuth::with_test_store(store.clone(), issuer);
         let restore = {
             let auth = auth.clone();
-            tokio::spawn(async move { auth.authorized(SubscriptionProvider::GrokSubscription, 0).await })
+            tokio::spawn(async move {
+                auth.authorized(SubscriptionProvider::GrokSubscription, 0)
+                    .await
+            })
         };
         accepted_rx.await.unwrap();
-        let generation = auth.sign_out(SubscriptionProvider::GrokSubscription).await.unwrap();
+        let generation = auth
+            .sign_out(SubscriptionProvider::GrokSubscription)
+            .await
+            .unwrap();
         assert_eq!(generation, 1);
         release.send(()).unwrap();
-        assert!(matches!(restore.await.unwrap(), Err(SessionError::StaleGeneration)));
-        assert!(store.read(SubscriptionProvider::GrokSubscription).unwrap().is_none());
+        assert!(matches!(
+            restore.await.unwrap(),
+            Err(SessionError::StaleGeneration)
+        ));
+        assert!(store
+            .read(SubscriptionProvider::GrokSubscription)
+            .unwrap()
+            .is_none());
         server.await.unwrap();
     }
 
     #[tokio::test]
     async fn storage_failure_never_exposes_a_session() {
         let (issuer, _, server) = mock_tokens(vec![FIRST]).await;
-        let store = Arc::new(MemoryStore { values: StdMutex::new(HashMap::from([("grok-subscription", stored_refresh("refresh-old"))])), fail_writes: true });
+        let store = Arc::new(MemoryStore {
+            values: StdMutex::new(HashMap::from([(
+                "grok-subscription",
+                stored_refresh("refresh-old"),
+            )])),
+            fail_writes: true,
+        });
         let auth = NativeSubscriptionAuth::with_test_store(store, issuer);
-        assert!(matches!(auth.authorized(SubscriptionProvider::GrokSubscription, 0).await, Err(SessionError::StorageUnavailable)));
-        assert_eq!(auth.generation(SubscriptionProvider::GrokSubscription).await, 0);
+        assert!(matches!(
+            auth.authorized(SubscriptionProvider::GrokSubscription, 0)
+                .await,
+            Err(SessionError::StorageUnavailable)
+        ));
+        assert_eq!(
+            auth.generation(SubscriptionProvider::GrokSubscription)
+                .await,
+            0
+        );
         server.await.unwrap();
     }
 
@@ -916,12 +1226,19 @@ mod tests {
     async fn grok_device_denial_is_terminal_and_never_echoes_provider_text() {
         let (issuer, _, server) = mock_http_sequence(vec![
             ("200 OK", DEVICE_START),
-            ("400 Bad Request", r#"{"error":"access_denied","error_description":"private response text"}"#),
-        ]).await;
-        let auth = NativeSubscriptionAuth::with_test_store(Arc::new(MemoryStore::default()), issuer);
+            (
+                "400 Bad Request",
+                r#"{"error":"access_denied","error_description":"private response text"}"#,
+            ),
+        ])
+        .await;
+        let auth =
+            NativeSubscriptionAuth::with_test_store(Arc::new(MemoryStore::default()), issuer);
         let (challenge, poll) = auth.start_grok_device_login().await.unwrap();
         assert_eq!(challenge.user_code, "ABCD-EFGH");
-        assert!(challenge.verification_url.starts_with("http://127.0.0.1:9999/"));
+        assert!(challenge
+            .verification_url
+            .starts_with("http://127.0.0.1:9999/"));
         assert!(matches!(poll.await, Err(AuthError::Denied)));
         server.await.unwrap();
     }
@@ -930,7 +1247,8 @@ mod tests {
     async fn grok_device_expiry_bounds_polling() {
         let body = r#"{"device_code":"opaque-device","user_code":"ABCD-EFGH","verification_uri":"http://127.0.0.1:9999/verify","expires_in":1,"interval":1}"#;
         let (issuer, count, server) = mock_http_sequence(vec![("200 OK", body)]).await;
-        let auth = NativeSubscriptionAuth::with_test_store(Arc::new(MemoryStore::default()), issuer);
+        let auth =
+            NativeSubscriptionAuth::with_test_store(Arc::new(MemoryStore::default()), issuer);
         let (_, poll) = auth.start_grok_device_login().await.unwrap();
         assert!(matches!(poll.await, Err(AuthError::Expired)));
         assert_eq!(count.load(Ordering::SeqCst), 1);
@@ -940,28 +1258,50 @@ mod tests {
     #[tokio::test]
     async fn cancelling_pending_device_login_clears_pending_state() {
         let (issuer, _, server) = mock_http_sequence(vec![("200 OK", DEVICE_START)]).await;
-        let auth = NativeSubscriptionAuth::with_test_store(Arc::new(MemoryStore::default()), issuer);
-        let challenge = auth.start_login(SubscriptionProvider::GrokSubscription).await.unwrap();
+        let auth =
+            NativeSubscriptionAuth::with_test_store(Arc::new(MemoryStore::default()), issuer);
+        let challenge = auth
+            .start_login(SubscriptionProvider::GrokSubscription)
+            .await
+            .unwrap();
         server.await.unwrap();
-        auth.cancel_login(SubscriptionProvider::GrokSubscription, &challenge.login_id).await.unwrap();
+        auth.cancel_login(SubscriptionProvider::GrokSubscription, &challenge.login_id)
+            .await
+            .unwrap();
         tokio::task::yield_now().await;
-        assert!(matches!(auth.status(SubscriptionProvider::GrokSubscription).await.state, SubscriptionAccountState::SignedOut));
-        assert!(!auth.inner.logins.lock().unwrap().contains_key(&challenge.login_id));
+        assert!(matches!(
+            auth.status(SubscriptionProvider::GrokSubscription)
+                .await
+                .state,
+            SubscriptionAccountState::SignedOut
+        ));
+        assert!(!auth
+            .inner
+            .logins
+            .lock()
+            .unwrap()
+            .contains_key(&challenge.login_id));
     }
 
     #[tokio::test]
     async fn concurrent_device_login_starts_reserve_a_single_provider_slot() {
         let (issuer, count, server) = mock_http_sequence(vec![("200 OK", DEVICE_START)]).await;
-        let auth = NativeSubscriptionAuth::with_test_store(Arc::new(MemoryStore::default()), issuer);
+        let auth =
+            NativeSubscriptionAuth::with_test_store(Arc::new(MemoryStore::default()), issuer);
         let (left, right) = tokio::join!(
             auth.start_login(SubscriptionProvider::GrokSubscription),
             auth.start_login(SubscriptionProvider::GrokSubscription),
         );
         assert!(left.is_ok());
-        assert!(matches!(&right, Err(AuthError::AlreadyPending)) || matches!(&left, Err(AuthError::AlreadyPending)));
+        assert!(
+            matches!(&right, Err(AuthError::AlreadyPending))
+                || matches!(&left, Err(AuthError::AlreadyPending))
+        );
         assert_eq!(count.load(Ordering::SeqCst), 1);
         let challenge = left.ok().or_else(|| right.ok()).unwrap();
-        auth.cancel_login(SubscriptionProvider::GrokSubscription, &challenge.login_id).await.unwrap();
+        auth.cancel_login(SubscriptionProvider::GrokSubscription, &challenge.login_id)
+            .await
+            .unwrap();
         server.await.unwrap();
     }
 
@@ -973,9 +1313,12 @@ mod tests {
         };
         drop(listener);
         let auth = NativeSubscriptionAuth::with_store(Arc::new(MemoryStore::default())).unwrap();
-        let (challenge, mut callback) = auth.start_codex_browser_login().await.unwrap();
+        let (challenge, callback) = auth.start_codex_browser_login().await.unwrap();
         let authorize = Url::parse(&challenge.verification_url).unwrap();
-        let state = authorize.query_pairs().find_map(|(key, value)| (key == "state").then(|| value.into_owned())).unwrap();
+        let state = authorize
+            .query_pairs()
+            .find_map(|(key, value)| (key == "state").then(|| value.into_owned()))
+            .unwrap();
         let wrong_response = send_callback("/auth/callback?code=bad&state=wrong-state").await;
         assert!(wrong_response.starts_with("HTTP/1.1 400"));
         let target = format!("/auth/callback?error=access_denied&state={state}");
@@ -988,12 +1331,22 @@ mod tests {
     async fn wrong_provider_cannot_cancel_another_pending_login() {
         let cancellation = CancellationToken::new();
         let auth = NativeSubscriptionAuth::with_store(Arc::new(MemoryStore::default())).unwrap();
-        auth.inner.logins.lock().unwrap().insert("opaque-login-id".into(), PendingLogin {
-            provider: SubscriptionProvider::GrokSubscription,
-            cancellation: cancellation.clone(),
-        });
-        auth.cancel_login(SubscriptionProvider::CodexSubscription, "opaque-login-id").await.unwrap();
+        auth.inner.logins.lock().unwrap().insert(
+            "opaque-login-id".into(),
+            PendingLogin {
+                provider: SubscriptionProvider::GrokSubscription,
+                cancellation: cancellation.clone(),
+            },
+        );
+        auth.cancel_login(SubscriptionProvider::CodexSubscription, "opaque-login-id")
+            .await
+            .unwrap();
         assert!(!cancellation.is_cancelled());
-        assert!(auth.inner.logins.lock().unwrap().contains_key("opaque-login-id"));
+        assert!(auth
+            .inner
+            .logins
+            .lock()
+            .unwrap()
+            .contains_key("opaque-login-id"));
     }
 }

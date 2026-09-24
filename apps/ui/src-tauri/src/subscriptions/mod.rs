@@ -15,10 +15,16 @@
 //! bodies, URLs, headers, or credentials.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::future::Future;
+use std::{
+    collections::{BTreeMap, HashMap},
+    future::Future,
+    sync::{Arc, Mutex as StdMutex},
+};
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub mod auth;
+pub mod transport;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SubscriptionProvider {
     CodexSubscription,
@@ -86,10 +92,7 @@ pub trait SubscriptionSessions: Send + Sync {
         used_access_token: &str,
     ) -> impl Future<Output = Result<AuthorizedSession, SessionError>> + Send;
 
-    fn generation(
-        &self,
-        provider: SubscriptionProvider,
-    ) -> impl Future<Output = u64> + Send;
+    fn generation(&self, provider: SubscriptionProvider) -> impl Future<Output = u64> + Send;
 
     /// Clears the provider session and increments generation before returning.
     fn sign_out(
@@ -110,7 +113,7 @@ pub struct SubscriptionLoginChallenge {
     pub expires_at: u64,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CapabilitySupport {
     Supported,
@@ -118,7 +121,7 @@ pub enum CapabilitySupport {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ApiBackend {
     ChatCompletions,
@@ -153,7 +156,11 @@ pub struct SubscriptionRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
 pub enum SubscriptionRequestEvent {
     Response {
         request_id: String,
@@ -175,4 +182,166 @@ pub enum SubscriptionRequestEvent {
         sequence: u64,
         message: String,
     },
+}
+
+#[derive(Clone)]
+pub struct SubscriptionRuntime {
+    pub auth: auth::NativeSubscriptionAuth,
+    pub transport: Arc<transport::SubscriptionTransport<auth::NativeSubscriptionAuth>>,
+    login_owners: Arc<StdMutex<HashMap<String, (String, SubscriptionProvider, u64)>>>,
+}
+
+impl SubscriptionRuntime {
+    pub fn new() -> Result<Self, String> {
+        let auth = auth::NativeSubscriptionAuth::new()
+            .map_err(|_| "Could not initialize secure subscription authentication.".to_owned())?;
+        let transport = Arc::new(transport::SubscriptionTransport::new(Arc::new(
+            auth.clone(),
+        ))?);
+        Ok(Self {
+            auth,
+            transport,
+            login_owners: Arc::new(StdMutex::new(HashMap::new())),
+        })
+    }
+
+    pub async fn start_login(
+        &self,
+        provider: SubscriptionProvider,
+        window_label: &str,
+    ) -> Result<SubscriptionLoginChallenge, String> {
+        let challenge = self
+            .auth
+            .start_login(provider)
+            .await
+            .map_err(sanitize_auth_error)?;
+        if let Err(error) = self.record_login_owner(
+            challenge.login_id.clone(),
+            provider,
+            window_label,
+            challenge.expires_at,
+        ) {
+            let _ = self.auth.cancel_login(provider, &challenge.login_id).await;
+            return Err(error);
+        }
+        Ok(challenge)
+    }
+
+    pub async fn sign_out(&self, provider: SubscriptionProvider) -> Result<u64, String> {
+        let generation = self
+            .auth
+            .sign_out(provider)
+            .await
+            .map_err(transport::sanitize_session_error)?;
+        self.transport.cancel_provider(provider).await;
+        self.transport.invalidate_catalog(provider).await;
+        if let Ok(mut owners) = self.login_owners.lock() {
+            owners.retain(|_, (_, owner_provider, _)| *owner_provider != provider);
+        }
+        Ok(generation)
+    }
+
+    pub fn record_login_owner(
+        &self,
+        login_id: String,
+        provider: SubscriptionProvider,
+        window_label: &str,
+        expires_at: u64,
+    ) -> Result<(), String> {
+        let mut owners = self
+            .login_owners
+            .lock()
+            .map_err(|_| "Subscription login state is unavailable.".to_owned())?;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        owners.retain(|_, (_, _, expires_at)| *expires_at > now_ms);
+        owners.insert(login_id, (window_label.to_owned(), provider, expires_at));
+        Ok(())
+    }
+
+    pub async fn cancel_login(
+        &self,
+        provider: SubscriptionProvider,
+        login_id: &str,
+        window_label: &str,
+    ) -> Result<(), String> {
+        let owns_challenge = {
+            let mut owners = self
+                .login_owners
+                .lock()
+                .map_err(|_| "Subscription login state is unavailable.".to_owned())?;
+            if owners
+                .get(login_id)
+                .is_some_and(|(owner, owner_provider, expires_at)| {
+                    owner == window_label && *owner_provider == provider && *expires_at > now_ms()
+                })
+            {
+                owners.remove(login_id);
+                true
+            } else {
+                false
+            }
+        };
+        if owns_challenge {
+            self.auth
+                .cancel_login(provider, login_id)
+                .await
+                .map_err(sanitize_auth_error)
+        } else {
+            Err("That subscription login belongs to another window or has expired.".to_owned())
+        }
+    }
+
+    pub async fn cancel_window_logins(&self, window_label: &str) {
+        let ids = self
+            .login_owners
+            .lock()
+            .map(|mut owners| {
+                let ids = owners
+                    .iter()
+                    .filter_map(|(login_id, (owner, provider, _))| {
+                        (owner == window_label).then_some((login_id.clone(), *provider))
+                    })
+                    .collect::<Vec<_>>();
+                for (login_id, _) in &ids {
+                    owners.remove(login_id);
+                }
+                ids
+            })
+            .unwrap_or_default();
+        for (login_id, provider) in ids {
+            let _ = self.auth.cancel_login(provider, &login_id).await;
+        }
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+pub(crate) fn sanitize_auth_error(error: auth::AuthError) -> String {
+    match error {
+        auth::AuthError::Cancelled => "Subscription sign-in was cancelled.".to_owned(),
+        auth::AuthError::Expired => {
+            "The subscription sign-in request expired. Try again.".to_owned()
+        }
+        auth::AuthError::Denied => "The subscription provider declined sign-in.".to_owned(),
+        auth::AuthError::Network => {
+            "Could not connect to the subscription sign-in service.".to_owned()
+        }
+        auth::AuthError::InvalidResponse => {
+            "The subscription sign-in response was invalid.".to_owned()
+        }
+        auth::AuthError::StorageUnavailable => {
+            "The operating system could not access the subscription keychain.".to_owned()
+        }
+        auth::AuthError::AlreadyPending => {
+            "A subscription sign-in is already in progress.".to_owned()
+        }
+    }
 }
