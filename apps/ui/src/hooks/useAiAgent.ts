@@ -488,6 +488,7 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
   }, [loadModelAndProviders]);
 
   const codexAccountGeneration = subscriptionStatus['codex-subscription'].generation;
+  const codexAccountState = subscriptionStatus['codex-subscription'].state;
 
   useEffect(() => {
     const expectedGeneration =
@@ -645,15 +646,14 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
   );
 
   useEffect(() => {
-    const codexStatus = subscriptionStatus['codex-subscription'];
     const expectedGeneration =
-      state.currentProvider === 'codex-subscription' ? codexStatus.generation : -1;
+      state.currentProvider === 'codex-subscription' ? codexAccountGeneration : -1;
     const scope = continuationScopeRef.current;
     if (
       scope &&
       (scope.provider !== state.currentProvider ||
         scope.accountGeneration !== expectedGeneration ||
-        codexStatus.state !== 'signed-in')
+        codexAccountState !== 'signed-in')
     ) {
       continuationRef.current = undefined;
       continuationScopeRef.current = null;
@@ -680,7 +680,7 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
     state.currentProvider,
     state.isStreaming,
     codexAccountGeneration,
-    subscriptionStatus['codex-subscription'].state,
+    codexAccountState,
   ]);
 
   useEffect(() => {
