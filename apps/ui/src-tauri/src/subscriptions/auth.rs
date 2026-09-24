@@ -23,7 +23,6 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
     sync::Mutex,
-    task::JoinHandle,
     time::{sleep, timeout},
 };
 use tokio_util::sync::CancellationToken;
@@ -394,7 +393,7 @@ impl NativeSubscriptionAuth {
                 let error = oauth_error(response).await;
                 match error.as_deref() {
                     Some("authorization_pending") => continue,
-                    Some("slow_down") => poll_interval += Duration::from_secs(5),
+                    Some("slow_down") => poll_interval = (poll_interval + Duration::from_secs(5)).min(Duration::from_secs(30)),
                     Some("access_denied" | "authorization_denied") => return Err(AuthError::Denied),
                     Some("expired_token") => return Err(AuthError::Expired),
                     _ => return Err(AuthError::Network),
@@ -433,39 +432,59 @@ impl NativeSubscriptionAuth {
         };
         let callback_timeout = MAX_LOGIN_LIFETIME;
         let callback = Box::pin(async move {
-            let (mut socket, _) = timeout(callback_timeout, listener.accept())
-                .await
-                .map_err(|_| AuthError::Expired)?
-                .map_err(|_| AuthError::Network)?;
-            let mut buffer = [0u8; 8192];
-            let count = timeout(Duration::from_secs(10), socket.read(&mut buffer))
-                .await
-                .map_err(|_| AuthError::Expired)?
-                .map_err(|_| AuthError::Network)?;
-            if count == 0 {
-                return Err(AuthError::InvalidResponse);
+            let deadline = Instant::now() + callback_timeout;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() { return Err(AuthError::Expired); }
+                let (mut socket, _) = timeout(remaining, listener.accept())
+                    .await.map_err(|_| AuthError::Expired)?
+                    .map_err(|_| AuthError::Network)?;
+                let mut bytes = Vec::with_capacity(1024);
+                let mut chunk = [0u8; 1024];
+                while bytes.len() < 8192 && !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read_timeout = Duration::from_secs(3).min(deadline.saturating_duration_since(Instant::now()));
+                    let count = match timeout(read_timeout, socket.read(&mut chunk)).await {
+                        Ok(Ok(count)) => count,
+                        _ => 0,
+                    };
+                    if count == 0 { break; }
+                    bytes.extend_from_slice(&chunk[..count]);
+                }
+                let request = String::from_utf8_lossy(&bytes);
+                let mut fields = request.lines().next().unwrap_or_default().split_whitespace();
+                let method = fields.next().unwrap_or_default();
+                let target = fields.next().unwrap_or_default();
+                if method != "GET" || target.is_empty() {
+                    respond_callback(&mut socket, 400, "Invalid sign-in callback request.").await;
+                    continue;
+                }
+                let callback_url = match Url::parse(&format!("http://localhost:1455{target}")) {
+                    Ok(url) => url,
+                    Err(_) => {
+                        respond_callback(&mut socket, 400, "Invalid sign-in callback request.").await;
+                        continue;
+                    }
+                };
+                if callback_url.path() != "/auth/callback" {
+                    respond_callback(&mut socket, 404, "Sign-in callback not found.").await;
+                    continue;
+                }
+                let params = callback_url.query_pairs().into_owned().collect::<HashMap<_, _>>();
+                if params.get("state").map(String::as_str) != Some(state.as_str()) {
+                    respond_callback(&mut socket, 400, "Sign-in state did not match.").await;
+                    continue;
+                }
+                if let Some(error) = params.get("error") {
+                    respond_callback(&mut socket, 400, "Sign-in was denied.").await;
+                    return Err(if error == "access_denied" { AuthError::Denied } else { AuthError::InvalidResponse });
+                }
+                let Some(code) = params.get("code").cloned() else {
+                    respond_callback(&mut socket, 400, "Sign-in callback did not include a code.").await;
+                    continue;
+                };
+                respond_callback(&mut socket, 200, "Sign-in complete. You can return to OpenSCAD Studio.").await;
+                return Ok((code, verifier));
             }
-            let request = String::from_utf8_lossy(&buffer[..count]);
-            let target = request.lines().next().and_then(|line| line.split_whitespace().nth(1))
-                .ok_or(AuthError::InvalidResponse)?;
-            let callback_url = Url::parse(&format!("http://localhost:1455{target}"))
-                .map_err(|_| AuthError::InvalidResponse)?;
-            if callback_url.path() != "/auth/callback" {
-                respond_callback(&mut socket, 404, "Sign-in callback not found.").await;
-                return Err(AuthError::InvalidResponse);
-            }
-            let params = callback_url.query_pairs().into_owned().collect::<HashMap<_, _>>();
-            if params.get("state").map(String::as_str) != Some(state.as_str()) {
-                respond_callback(&mut socket, 400, "Sign-in state did not match.").await;
-                return Err(AuthError::Denied);
-            }
-            if let Some(error) = params.get("error") {
-                respond_callback(&mut socket, 400, "Sign-in was denied.").await;
-                return Err(if error == "access_denied" { AuthError::Denied } else { AuthError::InvalidResponse });
-            }
-            let code = params.get("code").ok_or(AuthError::InvalidResponse)?.clone();
-            respond_callback(&mut socket, 200, "Sign-in complete. You can return to OpenSCAD Studio.").await;
-            Ok((code, verifier))
         });
         let issuer = self.inner.endpoints.codex_issuer.clone();
         let redirect_uri = self.inner.endpoints.codex_callback.clone();
@@ -545,8 +564,11 @@ impl NativeSubscriptionAuth {
         tokens: TokenResponse,
     ) -> Result<(), AuthError> {
         if tokens.access_token.is_empty() { return Err(AuthError::InvalidResponse); }
-        let refresh_token = tokens.refresh_token.filter(|value| !value.is_empty()).ok_or(AuthError::InvalidResponse)?;
         let account_id = token_account_id(&tokens);
+        let refresh_token = tokens.refresh_token.as_ref()
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .ok_or(AuthError::InvalidResponse)?;
         let encoded = serde_json::to_string(&StoredCredential { refresh_token, account_id: account_id.clone() })
             .map_err(|_| AuthError::InvalidResponse)?;
         let mut state = self.state(provider).lock().await;
@@ -656,18 +678,26 @@ impl SubscriptionSessions for NativeSubscriptionAuth {
             state.account_id = None;
             state.access_expires_at = None;
             let generation = state.generation;
-            let mut logins = self.inner.logins.lock().map_err(|_| SessionError::StorageUnavailable)?;
-            let ids = logins.iter().filter_map(|(id, pending)| (pending.provider == provider).then_some(id.clone())).collect::<Vec<_>>();
-            for id in ids {
-                if let Some(pending) = logins.remove(&id) {
-                    pending.cancellation.cancel();
-                }
-            }
-            drop(logins);
+            self.cancel_provider_logins(provider).map_err(|_| SessionError::StorageUnavailable)?;
             self.delete_stored(provider).await.map_err(|_| SessionError::StorageUnavailable)?;
             drop(state);
             Ok(generation)
         }
+    }
+}
+
+impl NativeSubscriptionAuth {
+    fn cancel_provider_logins(&self, provider: SubscriptionProvider) -> Result<(), ()> {
+        let mut logins = self.inner.logins.lock().map_err(|_| ())?;
+        let ids = logins.iter()
+            .filter_map(|(id, pending)| (pending.provider == provider).then_some(id.clone()))
+            .collect::<Vec<_>>();
+        for id in ids {
+            if let Some(pending) = logins.remove(&id) {
+                pending.cancellation.cancel();
+            }
+        }
+        Ok(())
     }
 }
 
@@ -698,6 +728,10 @@ async fn oauth_error(response: Response) -> Option<String> {
 
 fn validate_verification_url(value: &str) -> Result<(), AuthError> {
     let url = Url::parse(value).map_err(|_| AuthError::InvalidResponse)?;
+    #[cfg(test)]
+    if url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "localhost")) {
+        return Ok(());
+    }
     if url.scheme() == "https" && matches!(url.host_str(), Some("auth.x.ai" | "accounts.x.ai" | "auth.openai.com" | "chatgpt.com")) {
         Ok(())
     } else {
@@ -707,7 +741,8 @@ fn validate_verification_url(value: &str) -> Result<(), AuthError> {
 
 async fn respond_callback(socket: &mut tokio::net::TcpStream, status: u16, message: &str) {
     let body = format!("<!doctype html><title>OpenSCAD Studio</title><p>{message}</p>");
-    let response = format!("HTTP/1.1 {status} OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    let reason = match status { 200 => "OK", 400 => "Bad Request", 404 => "Not Found", _ => "Error" };
+    let response = format!("HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
     let _ = socket.write_all(response.as_bytes()).await;
 }
 
@@ -733,6 +768,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::{net::TcpListener, sync::oneshot};
+    use tokio::task::JoinHandle;
 
     #[derive(Default)]
     struct MemoryStore {
@@ -760,17 +796,21 @@ mod tests {
     }
 
     async fn mock_tokens(responses: Vec<&'static str>) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
+        mock_http_sequence(responses.into_iter().map(|body| ("200 OK", body)).collect()).await
+    }
+
+    async fn mock_http_sequence(responses: Vec<(&'static str, &'static str)>) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let issuer = format!("http://{}", listener.local_addr().unwrap());
         let count = Arc::new(AtomicUsize::new(0));
         let observed = count.clone();
         let task = tokio::spawn(async move {
-            for body in responses {
+            for (status, body) in responses {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut request = [0u8; 4096];
                 let _ = socket.read(&mut request).await.unwrap();
                 observed.fetch_add(1, Ordering::SeqCst);
-                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                let response = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
                 socket.write_all(response.as_bytes()).await.unwrap();
             }
         });
@@ -779,6 +819,22 @@ mod tests {
 
     const FIRST: &str = r#"{"access_token":"access-one","refresh_token":"refresh-one","expires_in":3600}"#;
     const ROTATED: &str = r#"{"access_token":"access-two","refresh_token":"refresh-two","expires_in":3600}"#;
+    const DEVICE_START: &str = r#"{"device_code":"opaque-device","user_code":"ABCD-EFGH","verification_uri":"http://127.0.0.1:9999/verify","expires_in":60,"interval":1}"#;
+
+    fn auth_with_stored_refresh(issuer: String) -> (NativeSubscriptionAuth, Arc<MemoryStore>) {
+        let store = Arc::new(MemoryStore::default());
+        store.write(SubscriptionProvider::GrokSubscription, &stored_refresh("refresh-old")).unwrap();
+        (NativeSubscriptionAuth::with_test_store(store.clone(), issuer), store)
+    }
+
+    async fn send_callback(target: &str) -> String {
+        let mut stream = tokio::net::TcpStream::connect("127.0.0.1:1455").await.unwrap();
+        let request = format!("GET {target} HTTP/1.1\r\nHost: localhost:1455\r\nConnection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = vec![0; 1024];
+        let count = stream.read(&mut response).await.unwrap();
+        String::from_utf8_lossy(&response[..count]).into_owned()
+    }
 
     #[tokio::test]
     async fn restart_restores_refresh_credential_and_rotates_it() {
@@ -854,6 +910,78 @@ mod tests {
         assert!(matches!(auth.authorized(SubscriptionProvider::GrokSubscription, 0).await, Err(SessionError::StorageUnavailable)));
         assert_eq!(auth.generation(SubscriptionProvider::GrokSubscription).await, 0);
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn grok_device_denial_is_terminal_and_never_echoes_provider_text() {
+        let (issuer, _, server) = mock_http_sequence(vec![
+            ("200 OK", DEVICE_START),
+            ("400 Bad Request", r#"{"error":"access_denied","error_description":"private response text"}"#),
+        ]).await;
+        let auth = NativeSubscriptionAuth::with_test_store(Arc::new(MemoryStore::default()), issuer);
+        let (challenge, poll) = auth.start_grok_device_login().await.unwrap();
+        assert_eq!(challenge.user_code, "ABCD-EFGH");
+        assert!(challenge.verification_url.starts_with("http://127.0.0.1:9999/"));
+        assert!(matches!(poll.await, Err(AuthError::Denied)));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn grok_device_expiry_bounds_polling() {
+        let body = r#"{"device_code":"opaque-device","user_code":"ABCD-EFGH","verification_uri":"http://127.0.0.1:9999/verify","expires_in":1,"interval":1}"#;
+        let (issuer, count, server) = mock_http_sequence(vec![("200 OK", body)]).await;
+        let auth = NativeSubscriptionAuth::with_test_store(Arc::new(MemoryStore::default()), issuer);
+        let (_, poll) = auth.start_grok_device_login().await.unwrap();
+        assert!(matches!(poll.await, Err(AuthError::Expired)));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_pending_device_login_clears_pending_state() {
+        let (issuer, _, server) = mock_http_sequence(vec![("200 OK", DEVICE_START)]).await;
+        let auth = NativeSubscriptionAuth::with_test_store(Arc::new(MemoryStore::default()), issuer);
+        let challenge = auth.start_login(SubscriptionProvider::GrokSubscription).await.unwrap();
+        server.await.unwrap();
+        auth.cancel_login(SubscriptionProvider::GrokSubscription, &challenge.login_id).await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(matches!(auth.status(SubscriptionProvider::GrokSubscription).await.state, SubscriptionAccountState::SignedOut));
+        assert!(!auth.inner.logins.lock().unwrap().contains_key(&challenge.login_id));
+    }
+
+    #[tokio::test]
+    async fn concurrent_device_login_starts_reserve_a_single_provider_slot() {
+        let (issuer, count, server) = mock_http_sequence(vec![("200 OK", DEVICE_START)]).await;
+        let auth = NativeSubscriptionAuth::with_test_store(Arc::new(MemoryStore::default()), issuer);
+        let (left, right) = tokio::join!(
+            auth.start_login(SubscriptionProvider::GrokSubscription),
+            auth.start_login(SubscriptionProvider::GrokSubscription),
+        );
+        assert!(left.is_ok());
+        assert!(matches!(&right, Err(AuthError::AlreadyPending)) || matches!(&left, Err(AuthError::AlreadyPending)));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let challenge = left.ok().or_else(|| right.ok()).unwrap();
+        auth.cancel_login(SubscriptionProvider::GrokSubscription, &challenge.login_id).await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn browser_callback_rejects_wrong_state_then_handles_denial() {
+        let listener = match TcpListener::bind("127.0.0.1:1455").await {
+            Ok(listener) => listener,
+            Err(_) => return,
+        };
+        drop(listener);
+        let auth = NativeSubscriptionAuth::with_store(Arc::new(MemoryStore::default())).unwrap();
+        let (challenge, mut callback) = auth.start_codex_browser_login().await.unwrap();
+        let authorize = Url::parse(&challenge.verification_url).unwrap();
+        let state = authorize.query_pairs().find_map(|(key, value)| (key == "state").then(|| value.into_owned())).unwrap();
+        let wrong_response = send_callback("/auth/callback?code=bad&state=wrong-state").await;
+        assert!(wrong_response.starts_with("HTTP/1.1 400"));
+        let target = format!("/auth/callback?error=access_denied&state={state}");
+        let denial_response = send_callback(&target).await;
+        assert!(denial_response.starts_with("HTTP/1.1 400"));
+        assert!(matches!(callback.await, Err(AuthError::Denied)));
     }
 
     #[tokio::test]
