@@ -92,6 +92,20 @@ function humanizeStreamError(errorText: string, provider?: AiConnectionProvider)
   return `Failed: ${errorText}`;
 }
 
+function getModelVisionSupport(
+  provider: AiConnectionProvider,
+  modelId: string,
+  fallback: (id: string) => VisionSupport
+): VisionSupport {
+  if (provider === 'codex-subscription' || provider === 'grok-subscription') {
+    const images = getSubscriptionSnapshot().models[provider]?.find(
+      (model) => model.id === modelId
+    )?.images;
+    return images === 'supported' ? 'yes' : images === 'unsupported' ? 'no' : 'unknown';
+  }
+  return fallback(modelId);
+}
+
 function extractApplyEditCheckpointId(output: unknown): string | null {
   if (typeof output === 'object' && output !== null && '__checkpointId' in output) {
     const checkpointId = (output as { __checkpointId?: unknown }).__checkpointId;
@@ -240,7 +254,7 @@ interface UseAiAgentOptions {
 export function useAiAgent(options: UseAiAgentOptions = {}) {
   const defaultAnalytics = useAnalytics();
   const defaultAvailableProviders = useAvailableAiConnections();
-  const { status: subscriptionStatus } = useSubscriptionStore();
+  const { status: subscriptionStatus, models: subscriptionModels } = useSubscriptionStore();
   const overrides = options.testOverrides;
   const analytics = overrides?.analytics ?? defaultAnalytics;
   const availableProviders = overrides?.availableProviders ?? defaultAvailableProviders;
@@ -269,7 +283,11 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
     currentToolCalls: [],
     currentProvider: initialSelection.provider,
     currentModel: initialSelection.modelId,
-    currentModelVisionSupport: getVisionSupportForModelIdImpl(initialSelection.modelId),
+    currentModelVisionSupport: getModelVisionSupport(
+      initialSelection.provider,
+      initialSelection.modelId,
+      getVisionSupportForModelIdImpl
+    ),
     draft: EMPTY_DRAFT,
     attachments: {},
     draftErrors: [],
@@ -447,7 +465,11 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
       ...prev,
       currentProvider: resolvedSelection.provider,
       currentModel: resolvedSelection.modelId,
-      currentModelVisionSupport: getVisionSupportForModelIdImpl(resolvedSelection.modelId),
+      currentModelVisionSupport: getModelVisionSupport(
+        resolvedSelection.provider,
+        resolvedSelection.modelId,
+        getVisionSupportForModelIdImpl
+      ),
     }));
     if (IS_DEV) {
       console.log(
@@ -459,7 +481,7 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
         availableProviders
       );
     }
-  }, [availableProviders, getVisionSupportForModelIdImpl]);
+  }, [availableProviders, getVisionSupportForModelIdImpl, subscriptionModels]);
 
   useEffect(() => {
     loadModelAndProviders();
@@ -621,6 +643,45 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
     },
     [analytics, logTurnWarnings]
   );
+
+  useEffect(() => {
+    const codexStatus = subscriptionStatus['codex-subscription'];
+    const expectedGeneration =
+      state.currentProvider === 'codex-subscription' ? codexStatus.generation : -1;
+    const scope = continuationScopeRef.current;
+    if (
+      scope &&
+      (scope.provider !== state.currentProvider ||
+        scope.accountGeneration !== expectedGeneration ||
+        codexStatus.state !== 'signed-in')
+    ) {
+      continuationRef.current = undefined;
+      continuationScopeRef.current = null;
+      if (state.isStreaming && activeTurnRef.current) {
+        abortControllerRef.current?.abort();
+        finalizeStreamTurn(activeTurnRef.current, { reason: 'cancelled' });
+      }
+    }
+    setState((previous) => {
+      const messages = previous.messages.map((message) =>
+        message.type === 'assistant' &&
+        message.continuation &&
+        (message.continuation.provider !== state.currentProvider ||
+          message.continuation.accountGeneration !== expectedGeneration)
+          ? { ...message, continuation: undefined }
+          : message
+      );
+      if (messages.every((message, index) => message === previous.messages[index])) return previous;
+      committedMessagesRef.current = messages;
+      return { ...previous, messages };
+    });
+  }, [
+    finalizeStreamTurn,
+    state.currentProvider,
+    state.isStreaming,
+    subscriptionStatus['codex-subscription'].generation,
+    subscriptionStatus['codex-subscription'].state,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -935,15 +996,19 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
           if (chunk.type === 'reasoning-end' && provider === 'codex-subscription') {
             const openaiMetadata = (
               chunk.providerMetadata as
-                | { openai?: { reasoningEncryptedContent?: unknown } }
+                | { openai?: { itemId?: unknown; reasoningEncryptedContent?: unknown } }
                 | undefined
             )?.openai;
-            if (typeof openaiMetadata?.reasoningEncryptedContent === 'string') {
+            if (
+              typeof openaiMetadata?.itemId === 'string' &&
+              typeof openaiMetadata.reasoningEncryptedContent === 'string'
+            ) {
               const scope = continuationScopeRef.current;
               if (scope) {
                 continuationRef.current = {
                   provider: scope.provider,
                   accountGeneration: scope.accountGeneration,
+                  itemId: openaiMetadata.itemId,
                   encryptedContent: openaiMetadata.reasoningEncryptedContent,
                 };
               }
@@ -1114,19 +1179,11 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
         ...prev,
         currentProvider: provider,
         currentModel: model,
-        currentModelVisionSupport:
-          provider === 'codex-subscription' || provider === 'grok-subscription'
-            ? (() => {
-                const imageSupport = (getSubscriptionSnapshot().models[provider] ?? []).find(
-                  (entry) => entry.id === model
-                )?.images;
-                return imageSupport === 'supported'
-                  ? 'yes'
-                  : imageSupport === 'unsupported'
-                    ? 'no'
-                    : 'unknown';
-              })()
-            : getVisionSupportForModelIdImpl(model),
+        currentModelVisionSupport: getModelVisionSupport(
+          provider,
+          model,
+          getVisionSupportForModelIdImpl
+        ),
       }));
       setStoredModelSelection({ provider, modelId: model });
       analytics.track('model selected', {

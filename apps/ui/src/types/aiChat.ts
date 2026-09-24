@@ -49,6 +49,7 @@ export interface AssistantMessage extends BaseMessage {
   continuation?: {
     provider: 'codex-subscription';
     accountGeneration: number;
+    itemId: string;
     encryptedContent: string;
   };
 }

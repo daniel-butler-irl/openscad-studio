@@ -2,6 +2,51 @@ import { getVisionSupportForModelId, messagesToModelMessages } from '../aiMessag
 import type { AttachmentStore, Message } from '../../types/aiChat';
 
 describe('aiMessages', () => {
+  it('replays scoped Codex encrypted reasoning and tool results on the next SDK turn', () => {
+    const messages: Message[] = [
+      { id: 'user-1', timestamp: 1, type: 'user', parts: [{ type: 'text', text: 'Inspect and revise.' }] },
+      {
+        id: 'assistant-1', timestamp: 2, type: 'assistant', turnId: 'turn-1',
+        content: 'I inspected the source.', state: 'complete',
+      },
+      {
+        id: 'tool-1', timestamp: 3, type: 'tool-call', toolCallId: 'call-1',
+        toolName: 'read_file', args: { path: 'main.scad' }, state: 'completed', result: 'cube(10);',
+      },
+      {
+        id: 'assistant-2', timestamp: 4, type: 'assistant', turnId: 'turn-1',
+        content: 'The file contains a cube.', state: 'complete',
+        continuation: {
+          provider: 'codex-subscription', accountGeneration: 7,
+          itemId: 'reasoning-item-8', encryptedContent: 'opaque-encrypted-reasoning',
+        },
+      },
+      { id: 'user-2', timestamp: 5, type: 'user', parts: [{ type: 'text', text: 'Make it larger.' }] },
+    ];
+
+    const nextTurn = messagesToModelMessages(messages, {}, {
+      provider: 'codex-subscription', accountGeneration: 7,
+    });
+    expect(nextTurn).toContainEqual({
+      role: 'assistant',
+      content: [{
+        type: 'reasoning', text: '',
+        providerOptions: { openai: { itemId: 'reasoning-item-8', reasoningEncryptedContent: 'opaque-encrypted-reasoning' } },
+      }, { type: 'text', text: 'The file contains a cube.' }],
+    });
+    expect(nextTurn).toContainEqual({
+      role: 'tool',
+      content: [{
+        type: 'tool-result', toolCallId: 'call-1', toolName: 'read_file',
+        output: { type: 'text', value: 'cube(10);' },
+      }],
+    });
+    expect(messagesToModelMessages(messages, {}, {
+      provider: 'codex-subscription', accountGeneration: 8,
+    }).some((message) => message.role === 'assistant' && Array.isArray(message.content) &&
+      message.content.some((part) => part.type === 'reasoning'))).toBe(false);
+  });
+
   it('maps text and image user parts into multimodal model messages', () => {
     const messages: Message[] = [
       {

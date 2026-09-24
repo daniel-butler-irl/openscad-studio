@@ -95,7 +95,10 @@ export function messagesToModelMessages(
                   type: 'reasoning' as const,
                   text: '',
                   providerOptions: {
-                    openai: { reasoningEncryptedContent: continuation.encryptedContent },
+                    openai: {
+                      itemId: continuation.itemId,
+                      reasoningEncryptedContent: continuation.encryptedContent,
+                    },
                   },
                 },
               ]

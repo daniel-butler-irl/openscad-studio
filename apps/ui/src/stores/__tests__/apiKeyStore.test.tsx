@@ -10,6 +10,7 @@ import {
   getProviderFromModel,
   getStoredModel,
   getStoredModelSelection,
+  getPreferredDefaultModelSelection,
   invalidateApiKeyStatus,
   setStoredModelSelection,
   setStoredModel,
@@ -32,6 +33,17 @@ function StoreHarness() {
 }
 
 describe('apiKeyStore', () => {
+  it('keeps subscription-only startup on a pending subscription selection', () => {
+    expect(getPreferredDefaultModelSelection(['codex-subscription'])).toEqual({
+      provider: 'codex-subscription',
+      modelId: '',
+    });
+    expect(getPreferredDefaultModelSelection(['grok-subscription'])).toEqual({
+      provider: 'grok-subscription',
+      modelId: '',
+    });
+  });
+
   beforeEach(() => {
     localStorage.clear();
     invalidateApiKeyStatus();

@@ -32,8 +32,9 @@ jest.unstable_mockModule('@/components/AiAccessEmptyState', () => ({
   AiAccessEmptyState: () => <div data-testid="ai-access-empty-state" />,
 }));
 
+let mockHasApiKey = true;
 jest.unstable_mockModule('@/stores/apiKeyStore', () => ({
-  useHasApiKey: () => true,
+  useHasApiKey: () => mockHasApiKey,
 }));
 
 let AiPromptPanel: typeof import('../AiPromptPanel').AiPromptPanel;
@@ -164,6 +165,19 @@ function installScrollMetrics(
 describe('AiPromptPanel', () => {
   beforeAll(async () => {
     ({ AiPromptPanel } = await import('@/components/AiPromptPanel'));
+  });
+
+  beforeEach(() => {
+    mockHasApiKey = true;
+  });
+
+  it('keeps the chat composer available for a signed-in subscription without API keys', () => {
+    mockHasApiKey = false;
+    renderWithProviders(
+      <AiPromptPanel {...createBaseProps({ availableProviders: ['grok-subscription'] })} />
+    );
+    expect(screen.getByTestId('ai-composer')).toBeTruthy();
+    expect(screen.queryByTestId('ai-access-empty-state')).toBeNull();
   });
 
   it('keeps completed tool payloads collapsed until expanded', () => {

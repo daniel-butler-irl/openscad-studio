@@ -89,6 +89,9 @@ export function WelcomeScreen({
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
   const [recentFilesReady, setRecentFilesReady] = useState(!showRecentFiles);
   const hasApiKey = useHasApiKey();
+  const hasAiConnection = hasApiKey || availableProviders.some(
+    (provider) => provider === 'codex-subscription' || provider === 'grok-subscription'
+  );
 
   // Shorten home directory to ~/ for display
   const displayPath = useMemo(() => {
@@ -165,7 +168,7 @@ export function WelcomeScreen({
           What do you want to create?
         </Text>
 
-        {hasApiKey ? (
+        {hasAiConnection ? (
           <div data-testid="welcome-ai-entry" className="space-y-6 ph-no-capture">
             <div>
               <AiComposer
@@ -238,11 +241,11 @@ export function WelcomeScreen({
                     key={example}
                     variant="secondary"
                     onClick={() => {
-                      if (!hasApiKey) return;
+                      if (!hasAiConnection) return;
                       onStartWithDraft({ text: example, attachmentIds: [] });
                     }}
-                    disabled={!hasApiKey}
-                    title={!hasApiKey ? 'Configure an AI provider in Settings to use AI' : example}
+                    disabled={!hasAiConnection}
+                    title={!hasAiConnection ? 'Configure an AI provider in Settings to use AI' : example}
                   >
                     {example}
                   </Button>
@@ -250,7 +253,7 @@ export function WelcomeScreen({
               </div>
             </div>
           </div>
-        ) : hasApiKey === false ? (
+        ) : !hasAiConnection ? (
           <div
             className="rounded-lg p-4 text-center"
             style={{

@@ -664,7 +664,7 @@ impl NativeSubscriptionAuth {
         if tokens.access_token.is_empty() {
             return Err(AuthError::InvalidResponse);
         }
-        let account_id = token_account_id(&tokens);
+        let account_id = token_account_id(provider, &tokens);
         let refresh_token = tokens
             .refresh_token
             .as_ref()
@@ -791,7 +791,7 @@ impl NativeSubscriptionAuth {
             .refresh_token
             .clone()
             .unwrap_or(stored.refresh_token);
-        let account_id = token_account_id(&refreshed).or(stored.account_id);
+        let account_id = token_account_id(provider, &refreshed).or(stored.account_id);
         let encoded = serde_json::to_string(&StoredCredential {
             refresh_token,
             account_id: account_id.clone(),
@@ -964,17 +964,22 @@ async fn respond_callback(socket: &mut tokio::net::TcpStream, status: u16, messa
     let _ = socket.write_all(response.as_bytes()).await;
 }
 
-fn token_account_id(tokens: &TokenResponse) -> Option<String> {
+fn token_account_id(provider: SubscriptionProvider, tokens: &TokenResponse) -> Option<String> {
     let id_token = tokens.id_token.as_deref().unwrap_or(&tokens.access_token);
     let payload = id_token.split('.').nth(1)?;
     let json = URL_SAFE_NO_PAD.decode(payload).ok()?;
     let claims: serde_json::Value = serde_json::from_slice(&json).ok()?;
-    claims
+    let codex_account = claims
         .get("https://api.openai.com/auth")
         .and_then(|auth| auth.get("chatgpt_account_id"))
         .and_then(serde_json::Value::as_str)
-        .or_else(|| claims.get("sub").and_then(serde_json::Value::as_str))
-        .map(str::to_owned)
+        .map(str::to_owned);
+    match provider {
+        SubscriptionProvider::CodexSubscription => codex_account,
+        SubscriptionProvider::GrokSubscription => codex_account.or_else(|| {
+            claims.get("sub").and_then(serde_json::Value::as_str).map(str::to_owned)
+        }),
+    }
 }
 
 fn epoch_millis_after(duration: Duration) -> u64 {

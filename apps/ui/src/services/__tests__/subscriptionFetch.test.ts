@@ -3,6 +3,8 @@ import { stepCountIs, streamText, tool } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { z } from 'zod';
 import { createSubscriptionFetch } from '../subscriptionFetch';
+import { messagesToModelMessages } from '../../utils/aiMessages';
+import type { Message } from '../../types/aiChat';
 import type {
   SubscriptionBridge,
   SubscriptionRequest,
@@ -313,5 +315,51 @@ describe('createSubscriptionFetch', () => {
     expect(capturedBodies).toHaveLength(2);
     expect(JSON.stringify(capturedBodies[1])).toContain('function_call_output');
     expect(JSON.stringify(capturedBodies[1])).toContain('"call_id":"call-1"');
+
+    const history: Message[] = [
+      { id: 'user-1', timestamp: 1, type: 'user', parts: [{ type: 'text', text: 'Inspect.' }] },
+      {
+        id: 'assistant-1',
+        timestamp: 2,
+        type: 'assistant',
+        turnId: 'turn-1',
+        content: 'I inspected the project.',
+        state: 'complete',
+        continuation: {
+          provider: 'codex-subscription',
+          accountGeneration: 8,
+          itemId: 'reasoning-item-8',
+          encryptedContent: 'encrypted-reasoning-8',
+        },
+      },
+      {
+        id: 'tool-1',
+        timestamp: 3,
+        type: 'tool-call',
+        toolCallId: 'call-1',
+        toolName: 'apply_edit',
+        args: { path: 'main.scad' },
+        state: 'completed',
+        result: { status: 'success', path: 'main.scad' },
+      },
+      { id: 'user-2', timestamp: 4, type: 'user', parts: [{ type: 'text', text: 'Continue.' }] },
+    ];
+    const nextTurn = streamText({
+      model: modelProvider.responses('gpt-5-codex'),
+      messages: messagesToModelMessages(
+        history,
+        {},
+        {
+          provider: 'codex-subscription',
+          accountGeneration: 8,
+        }
+      ),
+      providerOptions: { openai: { store: false } },
+    });
+    await nextTurn.text;
+    expect(capturedBodies).toHaveLength(3);
+    expect(JSON.stringify(capturedBodies[2])).toContain('encrypted-reasoning-8');
+    expect(JSON.stringify(capturedBodies[2])).toContain('reasoning-item-8');
+    expect(JSON.stringify(capturedBodies[2])).toContain('function_call_output');
   });
 });

@@ -62,9 +62,11 @@ export function ModelSelector({
     anthropic: anthropicModels,
     openai: openaiModels,
     openaiCompatible: openAiCompatibleModels,
-    codexSubscription: codexModels,
-    grokSubscription: grokModels,
+    codexSubscription,
+    grokSubscription,
   } = groupedByProvider;
+  const codexModels = codexSubscription.filter((model) => model.apiBackend !== 'unknown');
+  const grokModels = grokSubscription.filter((model) => model.apiBackend !== 'unknown');
   const hasModels =
     anthropicModels.length > 0 ||
     openaiModels.length > 0 ||

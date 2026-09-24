@@ -86,6 +86,52 @@ describe('WelcomeScreen', () => {
     });
   });
 
+  it('shows the welcome composer and subscription model picker without API keys', async () => {
+    clearApiKey('anthropic');
+    clearApiKey('openai');
+    mockGetPlatform.mockReturnValue({
+      capabilities: { hasFileSystem: false, hasSubscriptionAuth: true },
+      fileExists: jest.fn(async () => false),
+      subscriptions: {
+        getStatus: jest.fn(async (provider: string) => ({
+          provider,
+          state: provider === 'grok-subscription' ? 'signed-in' : 'signed-out',
+          accountId: null,
+          generation: 2,
+        })),
+        listModels: jest.fn(async () => [{
+          id: 'grok-4.6', name: 'Grok 4.6', apiBackend: 'chat-completions',
+          images: 'supported', reasoning: 'supported', tools: 'supported', recommended: true,
+        }]),
+      },
+    });
+
+    renderWithProviders(
+      <WelcomeScreen
+        draft={{ text: '', attachmentIds: [] }}
+        attachments={{}}
+        draftErrors={[]}
+        canSubmitDraft={false}
+        isProcessingAttachments={false}
+        onDraftTextChange={() => {}}
+        onDraftFilesSelected={() => {}}
+        onDraftRemoveAttachment={() => {}}
+        onStartWithDraft={() => {}}
+        onStartManually={() => {}}
+        onOpenRecent={async () => 'opened'}
+        currentModel="grok-4.6"
+        currentProvider="grok-subscription"
+        availableProviders={['grok-subscription']}
+        onModelChange={() => {}}
+        showRecentFiles={false}
+      />
+    );
+
+    expect(await screen.findByTestId('welcome-ai-entry')).toBeTruthy();
+    const picker = await screen.findByRole('combobox');
+    await waitFor(() => expect(picker.textContent).toContain('Grok 4.6'));
+  });
+
   it('prunes missing recent files before rendering them', async () => {
     localStorage.setItem(
       'openscad-studio-recent-files',
