@@ -163,7 +163,9 @@ struct GrokDeviceStart {
 struct CodexDeviceStart {
     device_auth_id: String,
     user_code: String,
+    #[serde(default, deserialize_with = "deserialize_optional_u64")]
     interval: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_optional_u64")]
     expires_in: Option<u64>,
 }
 
@@ -915,6 +917,31 @@ fn session_from_state(state: &SessionState) -> Result<AuthorizedSession, Session
     })
 }
 
+fn next_grok_poll_interval(current: Duration) -> Duration {
+    (current + Duration::from_secs(5)).min(Duration::from_secs(30))
+}
+
+fn deserialize_optional_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Number(number)) => number
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| serde::de::Error::custom("expected a nonnegative integer")),
+        Some(serde_json::Value::String(number)) => number
+            .parse::<u64>()
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+        Some(_) => Err(serde::de::Error::custom(
+            "expected an integer or numeric string",
+        )),
+    }
+}
+
 async fn json_response<T: for<'de> Deserialize<'de>>(response: Response) -> Result<T, AuthError> {
     if !response.status().is_success() {
         let _ = oauth_error(response).await;
@@ -1077,6 +1104,106 @@ mod tests {
             token_account_id(SubscriptionProvider::GrokSubscription, &subject_only),
             Some("user-subject".into())
         );
+    }
+
+    #[test]
+    fn grok_slow_down_adds_five_seconds_and_caps_interval() {
+        assert_eq!(
+            next_grok_poll_interval(Duration::from_secs(1)),
+            Duration::from_secs(6)
+        );
+        assert_eq!(
+            next_grok_poll_interval(Duration::from_secs(27)),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            next_grok_poll_interval(Duration::from_secs(30)),
+            Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn codex_device_start_accepts_numeric_or_string_timing_fields() {
+        let response: CodexDeviceStart = serde_json::from_str(
+            r#"{"device_auth_id":"opaque","user_code":"ABCD","interval":"5","expires_in":"300"}"#,
+        )
+        .unwrap();
+        assert_eq!(response.interval, Some(5));
+        assert_eq!(response.expires_in, Some(300));
+
+        let response: CodexDeviceStart = serde_json::from_str(
+            r#"{"device_auth_id":"opaque","user_code":"ABCD","interval":5,"expires_in":300}"#,
+        )
+        .unwrap();
+        assert_eq!(response.interval, Some(5));
+        assert_eq!(response.expires_in, Some(300));
+    }
+
+    #[test]
+    fn user_facing_auth_errors_are_fixed_and_do_not_echo_provider_payloads() {
+        let errors = [
+            AuthError::Cancelled,
+            AuthError::Expired,
+            AuthError::Denied,
+            AuthError::Network,
+            AuthError::InvalidResponse,
+            AuthError::StorageUnavailable,
+            AuthError::AlreadyPending,
+        ];
+        for error in errors {
+            let message = super::super::sanitize_auth_error(error);
+            assert!(!message.contains("refresh_token"));
+            assert!(!message.contains("access_token"));
+            assert!(!message.contains("private response text"));
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_device_login_persists_only_native_refresh_credential() {
+        let store = Arc::new(MemoryStore::default());
+        let auth =
+            NativeSubscriptionAuth::with_test_store(store.clone(), "http://127.0.0.1".into());
+        let provider = SubscriptionProvider::GrokSubscription;
+        let login_id = "synthetic-success";
+        let cancellation = CancellationToken::new();
+        auth.inner.logins.lock().unwrap().insert(
+            login_id.into(),
+            PendingLogin {
+                provider,
+                cancellation: cancellation.clone(),
+            },
+        );
+
+        auth.install_tokens(
+            provider,
+            0,
+            login_id,
+            &cancellation,
+            TokenResponse {
+                access_token: "memory-access-token".into(),
+                refresh_token: Some("native-refresh-credential".into()),
+                expires_in: Some(3600),
+                id_token: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let stored: StoredCredential = serde_json::from_str(
+            store
+                .values
+                .lock()
+                .unwrap()
+                .get(provider_key(provider))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stored.refresh_token, "native-refresh-credential");
+        assert!(!serde_json::to_string(&stored)
+            .unwrap()
+            .contains("memory-access-token"));
+        let session = auth.authorized(provider, 1).await.unwrap();
+        assert_eq!(session.access_token, "memory-access-token");
     }
 
     async fn mock_tokens(
