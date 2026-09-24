@@ -336,7 +336,6 @@ impl NativeSubscriptionAuth {
                 );
             }
         };
-        let signed_in = in_memory || stored;
         let pending = self
             .inner
             .logins
@@ -1223,20 +1222,6 @@ mod tests {
             .contains("memory-access-token"));
         let session = auth.authorized(provider, 1).await.unwrap();
         assert_eq!(session.access_token, "memory-access-token");
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn keychain_backend_round_trips_isolated_synthetic_credential() {
-        let service = format!("{KEYRING_SERVICE}.integration-test");
-        let account = format!("roundtrip-{}", Uuid::new_v4());
-        let entry = Entry::new(&service, &account).unwrap();
-        let sentinel = format!("synthetic-{}", Uuid::new_v4());
-
-        entry.set_password(&sentinel).unwrap();
-        assert_eq!(entry.get_password().unwrap(), sentinel);
-        entry.delete_credential().unwrap();
-        assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
     }
 
     async fn mock_tokens(

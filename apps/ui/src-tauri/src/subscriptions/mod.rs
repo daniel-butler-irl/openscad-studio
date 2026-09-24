@@ -31,7 +31,7 @@ pub enum SubscriptionProvider {
     GrokSubscription,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SubscriptionAccountState {
     SignedOut,
