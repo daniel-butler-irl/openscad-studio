@@ -451,7 +451,18 @@ impl NativeSubscriptionAuth {
         ),
         AuthError,
     > {
-        let listener = TcpListener::bind("127.0.0.1:1455")
+        let redirect_uri = Url::parse(&self.inner.endpoints.codex_callback)
+            .map_err(|_| AuthError::InvalidResponse)?;
+        if redirect_uri.scheme() != "http"
+            || !matches!(redirect_uri.host_str(), Some("localhost" | "127.0.0.1"))
+            || redirect_uri.path() != "/auth/callback"
+        {
+            return Err(AuthError::InvalidResponse);
+        }
+        let callback_port = redirect_uri
+            .port_or_known_default()
+            .ok_or(AuthError::InvalidResponse)?;
+        let listener = TcpListener::bind(("127.0.0.1", callback_port))
             .await
             .map_err(|_| AuthError::Network)?;
         let state = Uuid::new_v4().simple().to_string();
@@ -517,14 +528,15 @@ impl NativeSubscriptionAuth {
                     respond_callback(&mut socket, 400, "Invalid sign-in callback request.").await;
                     continue;
                 }
-                let callback_url = match Url::parse(&format!("http://localhost:1455{target}")) {
-                    Ok(url) => url,
-                    Err(_) => {
-                        respond_callback(&mut socket, 400, "Invalid sign-in callback request.")
-                            .await;
-                        continue;
-                    }
-                };
+                let callback_url =
+                    match Url::parse(&format!("http://localhost:{callback_port}{target}")) {
+                        Ok(url) => url,
+                        Err(_) => {
+                            respond_callback(&mut socket, 400, "Invalid sign-in callback request.")
+                                .await;
+                            continue;
+                        }
+                    };
                 if callback_url.path() != "/auth/callback" {
                     respond_callback(&mut socket, 404, "Sign-in callback not found.").await;
                     continue;
@@ -1249,12 +1261,12 @@ mod tests {
         r#"{"access_token":"access-two","refresh_token":"refresh-two","expires_in":3600}"#;
     const DEVICE_START: &str = r#"{"device_code":"opaque-device","user_code":"ABCD-EFGH","verification_uri":"http://127.0.0.1:9999/verify","expires_in":60,"interval":1}"#;
 
-    async fn send_callback(target: &str) -> String {
-        let mut stream = tokio::net::TcpStream::connect("127.0.0.1:1455")
+    async fn send_callback(port: u16, target: &str) -> String {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .unwrap();
         let request =
-            format!("GET {target} HTTP/1.1\r\nHost: localhost:1455\r\nConnection: close\r\n\r\n");
+            format!("GET {target} HTTP/1.1\r\nHost: localhost:{port}\r\nConnection: close\r\n\r\n");
         stream.write_all(request.as_bytes()).await.unwrap();
         let mut response = vec![0; 1024];
         let count = stream.read(&mut response).await.unwrap();
@@ -1489,22 +1501,25 @@ mod tests {
 
     #[tokio::test]
     async fn browser_callback_rejects_wrong_state_then_handles_denial() {
-        let listener = match TcpListener::bind("127.0.0.1:1455").await {
-            Ok(listener) => listener,
-            Err(_) => return,
-        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
         drop(listener);
-        let auth = NativeSubscriptionAuth::with_store(Arc::new(MemoryStore::default())).unwrap();
+        let mut auth =
+            NativeSubscriptionAuth::with_store(Arc::new(MemoryStore::default())).unwrap();
+        Arc::get_mut(&mut auth.inner)
+            .unwrap()
+            .endpoints
+            .codex_callback = format!("http://localhost:{port}/auth/callback");
         let (challenge, callback) = auth.start_codex_browser_login().await.unwrap();
         let authorize = Url::parse(&challenge.verification_url).unwrap();
         let state = authorize
             .query_pairs()
             .find_map(|(key, value)| (key == "state").then(|| value.into_owned()))
             .unwrap();
-        let wrong_response = send_callback("/auth/callback?code=bad&state=wrong-state").await;
+        let wrong_response = send_callback(port, "/auth/callback?code=bad&state=wrong-state").await;
         assert!(wrong_response.starts_with("HTTP/1.1 400"));
         let target = format!("/auth/callback?error=access_denied&state={state}");
-        let denial_response = send_callback(&target).await;
+        let denial_response = send_callback(port, &target).await;
         assert!(denial_response.starts_with("HTTP/1.1 400"));
         assert!(matches!(callback.await, Err(AuthError::Denied)));
     }
