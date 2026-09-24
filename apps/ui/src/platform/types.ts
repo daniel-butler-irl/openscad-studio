@@ -23,6 +23,96 @@ export interface PlatformCapabilities {
   hasFileSystem: boolean;
   /** Whether the platform can set the window title (both can) */
   canSetWindowTitle: boolean;
+  /** Whether the subscription bridge is installed and backed by native secure storage. */
+  hasSubscriptionAuth: boolean;
+}
+
+/** Providers whose credentials are entered as API keys in the app. */
+export type ApiKeyProvider = 'anthropic' | 'openai' | 'openai-compatible';
+
+/** Providers authenticated through a desktop subscription account. */
+export type SubscriptionProvider = 'codex-subscription' | 'grok-subscription';
+
+export type AiConnectionProvider = ApiKeyProvider | SubscriptionProvider;
+
+/** Deliberately excludes access tokens, refresh tokens, and provider response bodies. */
+export interface SubscriptionAccountStatus {
+  provider: SubscriptionProvider;
+  state: 'signed-out' | 'pending' | 'signed-in' | 'error';
+  accountId: string | null;
+  generation: number;
+  message?: string;
+}
+
+export type SubscriptionLoginStart =
+  | {
+      kind: 'browser-pkce';
+      loginId: string;
+      verificationUrl: string;
+      /** Empty for browser authorization. */
+      userCode: string;
+      expiresAt: number;
+    }
+  | {
+      kind: 'device-code';
+      loginId: string;
+      verificationUrl: string;
+      userCode: string;
+      expiresAt: number;
+    };
+
+/** Challenge expiry uses epoch milliseconds. OAuth secrets stay native-only. */
+
+export interface SubscriptionModelInfo {
+  id: string;
+  name: string;
+  apiBackend: 'chat-completions' | 'responses' | 'unknown';
+  /** `unknown` remains distinct from an explicit lack of support. */
+  images: 'supported' | 'unsupported' | 'unknown';
+  reasoning: 'supported' | 'unsupported' | 'unknown';
+  tools: 'supported' | 'unsupported' | 'unknown';
+  recommended: boolean;
+  contextWindow?: number;
+}
+
+export interface SubscriptionRequest {
+  requestId: string;
+  provider: SubscriptionProvider;
+  accountGeneration: number;
+  modelId: string;
+  /** Native validates this payload and sets model, stream, and provider-specific safety fields. */
+  body: Record<string, unknown>;
+  /** Native-issued and scoped to the provider, account generation, and originating window. */
+  continuationId?: string;
+}
+
+export type SubscriptionStreamEvent =
+  | {
+      requestId: string;
+      sequence: number;
+      kind: 'response';
+      status: number;
+      headers: Record<string, string>;
+    }
+  | { requestId: string; sequence: number; kind: 'chunk'; bytes: number[] }
+  | { requestId: string; sequence: number; kind: 'complete' }
+  | { requestId: string; sequence: number; kind: 'error'; message: string };
+
+/** Native implementation owns fixed provider origins and all authorization headers. */
+export interface SubscriptionBridge {
+  getStatus(provider: SubscriptionProvider): Promise<SubscriptionAccountStatus>;
+  startLogin(provider: SubscriptionProvider): Promise<SubscriptionLoginStart>;
+  cancelLogin(provider: SubscriptionProvider, loginId: string): Promise<void>;
+  signOut(provider: SubscriptionProvider): Promise<void>;
+  listModels(
+    provider: SubscriptionProvider,
+    accountGeneration: number
+  ): Promise<SubscriptionModelInfo[]>;
+  startRequest(
+    request: SubscriptionRequest,
+    onEvent: (event: SubscriptionStreamEvent) => void
+  ): Promise<void>;
+  cancelRequest(requestId: string): Promise<void>;
 }
 
 export interface ConfirmDialogOptions {
@@ -49,6 +139,8 @@ export interface PlatformBridge {
   getLanCertificate(): Promise<string>;
 
   readonly capabilities: PlatformCapabilities;
+  /** Present only in the desktop bridge; never implemented with browser storage. */
+  readonly subscriptions?: SubscriptionBridge;
 
   // -- File operations --
 

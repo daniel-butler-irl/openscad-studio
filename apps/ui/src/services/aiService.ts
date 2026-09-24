@@ -5,7 +5,9 @@ import { z } from 'zod';
 import { eventBus, historyService } from '../platform';
 import { getRenderService, type RenderOptions } from './renderService';
 import type { PreviewSceneStyle } from './previewSceneConfig';
-import type { AiProvider } from '../stores/apiKeyStore';
+import type { AiConnectionProvider } from '../platform/types';
+import { createSubscriptionFetch } from './subscriptionFetch';
+import { getPlatform } from '../platform';
 import type { MeasurementUnit } from '../stores/settingsStore';
 import {
   buildProjectContextSummary,
@@ -140,16 +142,41 @@ You are an expert OpenSCAD assistant helping users design and modify 3D models. 
 - Prefer realistic 3D-printing-safe defaults, ranges, and steps.
 `;
 
-export interface CreateModelOptions {
-  baseUrl?: string;
-}
+export type CreateModelOptions =
+  | { kind: 'api-key'; baseUrl?: string }
+  | {
+      kind: 'subscription';
+      accountGeneration: number;
+      apiBackend?: 'responses' | 'chat-completions' | 'unknown';
+    }
+  /** Backward-compatible API-key configuration for existing callers. */
+  | { baseUrl?: string };
 
 export function createModel(
-  provider: AiProvider,
+  provider: AiConnectionProvider,
   apiKey: string,
   modelId: string,
   options: CreateModelOptions = {}
 ) {
+  if (provider === 'codex-subscription' || provider === 'grok-subscription') {
+    const subscriptions = getPlatform().subscriptions;
+    const subscriptionOptions =
+      'kind' in options && options.kind === 'subscription' ? options : null;
+    if (!subscriptions || !subscriptionOptions) {
+      throw new Error('Subscription account is not ready. Reconnect it in Settings.');
+    }
+    const openai = createOpenAI({
+      apiKey: 'native-managed',
+      fetch: createSubscriptionFetch(subscriptions, {
+        provider,
+        modelId,
+        accountGeneration: subscriptionOptions.accountGeneration,
+      }),
+    });
+    return subscriptionOptions.apiBackend === 'chat-completions'
+      ? openai.chat(modelId)
+      : openai.responses(modelId);
+  }
   if (provider === 'anthropic') {
     const anthropic = createAnthropic({
       apiKey,
@@ -160,7 +187,7 @@ export function createModel(
   if (provider === 'openai-compatible') {
     const openai = createOpenAI({
       apiKey: apiKey || 'local',
-      baseURL: options.baseUrl,
+      baseURL: 'baseUrl' in options ? options.baseUrl : undefined,
       name: 'openai-compatible',
     });
     return openai.chat(modelId);

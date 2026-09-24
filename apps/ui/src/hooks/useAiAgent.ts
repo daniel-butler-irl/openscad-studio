@@ -29,8 +29,15 @@ import {
   useAvailableProviders,
   type AiProvider,
 } from '../stores/apiKeyStore';
+import type { AiConnectionProvider } from '../platform/types';
+import {
+  getSubscriptionSnapshot,
+  useAvailableAiConnections,
+  useSubscriptionStore,
+} from '../stores/subscriptionStore';
 import type {
   AiDraft,
+  AssistantMessage,
   AttachmentStore,
   Conversation,
   Message,
@@ -75,7 +82,7 @@ function extractErrorText(error: unknown): string {
   return String(error);
 }
 
-function humanizeStreamError(errorText: string, provider?: AiProvider): string {
+function humanizeStreamError(errorText: string, provider?: AiConnectionProvider): string {
   if (/failed to fetch/i.test(errorText)) {
     if (provider === 'openai-compatible') {
       return 'Could not reach the OpenAI-compatible provider — check that the local server is running and allows browser requests.';
@@ -83,6 +90,20 @@ function humanizeStreamError(errorText: string, provider?: AiProvider): string {
     return 'Could not reach the AI service — check your internet connection.';
   }
   return `Failed: ${errorText}`;
+}
+
+function getModelVisionSupport(
+  provider: AiConnectionProvider,
+  modelId: string,
+  fallback: (id: string) => VisionSupport
+): VisionSupport {
+  if (provider === 'codex-subscription' || provider === 'grok-subscription') {
+    const images = getSubscriptionSnapshot().models[provider]?.find(
+      (model) => model.id === modelId
+    )?.images;
+    return images === 'supported' ? 'yes' : images === 'unsupported' ? 'no' : 'unknown';
+  }
+  return fallback(modelId);
 }
 
 function extractApplyEditCheckpointId(output: unknown): string | null {
@@ -196,7 +217,7 @@ export interface AiAgentState {
   conversations: Conversation[];
   currentConversationId: string | null;
   currentToolCalls: ToolCall[];
-  currentProvider: AiProvider;
+  currentProvider: AiConnectionProvider;
   currentModel: string;
   currentModelVisionSupport: VisionSupport;
   draft: AiDraft;
@@ -232,7 +253,8 @@ interface UseAiAgentOptions {
 
 export function useAiAgent(options: UseAiAgentOptions = {}) {
   const defaultAnalytics = useAnalytics();
-  const defaultAvailableProviders = useAvailableProviders();
+  const defaultAvailableProviders = useAvailableAiConnections();
+  const { status: subscriptionStatus } = useSubscriptionStore();
   const overrides = options.testOverrides;
   const analytics = overrides?.analytics ?? defaultAnalytics;
   const availableProviders = overrides?.availableProviders ?? defaultAvailableProviders;
@@ -261,7 +283,11 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
     currentToolCalls: [],
     currentProvider: initialSelection.provider,
     currentModel: initialSelection.modelId,
-    currentModelVisionSupport: getVisionSupportForModelIdImpl(initialSelection.modelId),
+    currentModelVisionSupport: getModelVisionSupport(
+      initialSelection.provider,
+      initialSelection.modelId,
+      getVisionSupportForModelIdImpl
+    ),
     draft: EMPTY_DRAFT,
     attachments: {},
     draftErrors: [],
@@ -288,6 +314,11 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
   const pendingCheckpointIdRef = useRef<string | null>(null);
   const didReceiveResponseRef = useRef(false);
   const requestStartedAtRef = useRef<number | null>(null);
+  const continuationRef = useRef<AssistantMessage['continuation']>();
+  const continuationScopeRef = useRef<{
+    provider: 'codex-subscription';
+    accountGeneration: number;
+  } | null>(null);
 
   useEffect(() => {
     if (!state.isStreaming) {
@@ -434,7 +465,11 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
       ...prev,
       currentProvider: resolvedSelection.provider,
       currentModel: resolvedSelection.modelId,
-      currentModelVisionSupport: getVisionSupportForModelIdImpl(resolvedSelection.modelId),
+      currentModelVisionSupport: getModelVisionSupport(
+        resolvedSelection.provider,
+        resolvedSelection.modelId,
+        getVisionSupportForModelIdImpl
+      ),
     }));
     if (IS_DEV) {
       console.log(
@@ -451,6 +486,27 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
   useEffect(() => {
     loadModelAndProviders();
   }, [loadModelAndProviders]);
+
+  const codexAccountGeneration = subscriptionStatus['codex-subscription'].generation;
+  const codexAccountState = subscriptionStatus['codex-subscription'].state;
+
+  useEffect(() => {
+    const expectedGeneration =
+      state.currentProvider === 'codex-subscription' ? codexAccountGeneration : -1;
+    setState((previous) => {
+      const messages = previous.messages.map((message) =>
+        message.type === 'assistant' &&
+        message.continuation &&
+        (message.continuation.provider !== state.currentProvider ||
+          message.continuation.accountGeneration !== expectedGeneration)
+          ? { ...message, continuation: undefined }
+          : message
+      );
+      if (messages.every((message, index) => message === previous.messages[index])) return previous;
+      committedMessagesRef.current = messages;
+      return { ...previous, messages };
+    });
+  }, [codexAccountGeneration, state.currentProvider]);
 
   const logTurnWarnings = useCallback((warnings: string[]) => {
     if (!IS_DEV || warnings.length === 0) return;
@@ -489,6 +545,7 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
 
       const submittedDraft = activeTurnDraftRef.current?.submittedDraft;
       const submittedReadyIds = activeTurnDraftRef.current?.submittedReadyIds ?? [];
+      const continuation = continuationRef.current;
 
       setState((prev) => {
         if (submittedDraft) {
@@ -520,10 +577,27 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
             ]
           : nextConversation.messages;
 
+        if (continuation && options.reason === 'complete') {
+          let targetIndex = -1;
+          for (let index = nextConversation.messages.length - 1; index >= 0; index -= 1) {
+            const candidate = nextConversation.messages[index];
+            if (candidate?.type === 'assistant' && candidate.turnId === activeTurn.turnId) {
+              targetIndex = index;
+              break;
+            }
+          }
+          if (targetIndex >= 0) {
+            const target = nextConversation.messages[targetIndex];
+            if (target?.type === 'assistant')
+              nextMessages[targetIndex] = { ...target, continuation };
+          }
+        }
+
         committedMessagesRef.current = nextMessages;
         activeTurnRef.current = null;
         activeTurnDraftRef.current = null;
         pendingCheckpointIdRef.current = null;
+        continuationRef.current = undefined;
 
         return {
           ...prev,
@@ -570,6 +644,44 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
     },
     [analytics, logTurnWarnings]
   );
+
+  useEffect(() => {
+    const expectedGeneration =
+      state.currentProvider === 'codex-subscription' ? codexAccountGeneration : -1;
+    const scope = continuationScopeRef.current;
+    if (
+      scope &&
+      (scope.provider !== state.currentProvider ||
+        scope.accountGeneration !== expectedGeneration ||
+        codexAccountState !== 'signed-in')
+    ) {
+      continuationRef.current = undefined;
+      continuationScopeRef.current = null;
+      if (state.isStreaming && activeTurnRef.current) {
+        abortControllerRef.current?.abort();
+        finalizeStreamTurn(activeTurnRef.current, { reason: 'cancelled' });
+      }
+    }
+    setState((previous) => {
+      const messages = previous.messages.map((message) =>
+        message.type === 'assistant' &&
+        message.continuation &&
+        (message.continuation.provider !== state.currentProvider ||
+          message.continuation.accountGeneration !== expectedGeneration)
+          ? { ...message, continuation: undefined }
+          : message
+      );
+      if (messages.every((message, index) => message === previous.messages[index])) return previous;
+      committedMessagesRef.current = messages;
+      return { ...previous, messages };
+    });
+  }, [
+    finalizeStreamTurn,
+    state.currentProvider,
+    state.isStreaming,
+    codexAccountGeneration,
+    codexAccountState,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -745,12 +857,36 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
       }
 
       const provider = currentState.currentProvider;
-      const modelOptions: CreateModelOptions = {};
-      let apiKey = getApiKey(provider);
+      const isSubscription = provider === 'codex-subscription' || provider === 'grok-subscription';
+      let modelOptions: CreateModelOptions = { kind: 'api-key' };
+      let apiKey = isSubscription ? 'native-managed' : getApiKey(provider as AiProvider);
+
+      if (isSubscription) {
+        const account = getSubscriptionSnapshot().status[provider];
+        const catalog = getSubscriptionSnapshot().models[provider] ?? [];
+        const modelMetadata = catalog.find((model) => model.id === currentState.currentModel);
+        if (account.state !== 'signed-in') {
+          setState((prev) => ({
+            ...prev,
+            error: 'Reconnect this subscription in Settings before sending.',
+          }));
+          return;
+        }
+        modelOptions = {
+          kind: 'subscription',
+          accountGeneration: account.generation,
+          apiBackend: modelMetadata?.apiBackend,
+        };
+        continuationScopeRef.current =
+          provider === 'codex-subscription'
+            ? { provider, accountGeneration: account.generation }
+            : null;
+        continuationRef.current = undefined;
+      }
 
       if (provider === 'openai-compatible') {
         const config = getOpenAiCompatibleConfig();
-        modelOptions.baseUrl = config.baseUrl;
+        modelOptions = { kind: 'api-key', baseUrl: config.baseUrl };
         apiKey = config.apiKey ?? 'local';
 
         if (!config.baseUrl || !currentState.currentModel.trim()) {
@@ -816,12 +952,13 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
 
       try {
         const model =
-          provider === 'openai-compatible'
+          provider === 'openai-compatible' || isSubscription
             ? createModelImpl(provider, apiKey, currentState.currentModel, modelOptions)
             : createModelImpl(provider, apiKey, currentState.currentModel);
         const modelMessages = messagesToModelMessagesImpl(
           updatedMessages,
-          currentState.attachments
+          currentState.attachments,
+          continuationScopeRef.current ?? undefined
         );
 
         const measurementUnit = callbacks.getMeasurementUnit();
@@ -840,6 +977,9 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
           tools,
           stopWhen: stepCountIs(MAX_AGENT_STEPS),
           abortSignal: abortController.signal,
+          ...(provider === 'codex-subscription'
+            ? { providerOptions: { openai: { store: false } } }
+            : {}),
         });
 
         let streamErrorText: string | null = null;
@@ -851,6 +991,28 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
 
           if (IS_DEV) {
             console.log('[useAiAgent] Stream chunk:', chunk.type);
+          }
+
+          if (chunk.type === 'reasoning-end' && provider === 'codex-subscription') {
+            const openaiMetadata = (
+              chunk.providerMetadata as
+                | { openai?: { itemId?: unknown; reasoningEncryptedContent?: unknown } }
+                | undefined
+            )?.openai;
+            if (
+              typeof openaiMetadata?.itemId === 'string' &&
+              typeof openaiMetadata.reasoningEncryptedContent === 'string'
+            ) {
+              const scope = continuationScopeRef.current;
+              if (scope) {
+                continuationRef.current = {
+                  provider: scope.provider,
+                  accountGeneration: scope.accountGeneration,
+                  itemId: openaiMetadata.itemId,
+                  encryptedContent: openaiMetadata.reasoningEncryptedContent,
+                };
+              }
+            }
           }
 
           if (
@@ -1001,14 +1163,27 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
     (
       model: string,
       sourceSurface: ModelSelectionSurface = 'unknown',
-      provider: AiProvider = getProviderFromModel(model)
+      provider: AiConnectionProvider = getProviderFromModel(model)
     ) => {
       if (IS_DEV) console.log('[useAiAgent] Setting current model to:', model, provider);
+      const current = stateRef.current;
+      if (current.currentProvider !== provider) {
+        continuationRef.current = undefined;
+        continuationScopeRef.current = null;
+        if (current.isStreaming && activeTurnRef.current) {
+          abortControllerRef.current?.abort();
+          finalizeStreamTurn(activeTurnRef.current, { reason: 'cancelled' });
+        }
+      }
       setState((prev) => ({
         ...prev,
         currentProvider: provider,
         currentModel: model,
-        currentModelVisionSupport: getVisionSupportForModelIdImpl(model),
+        currentModelVisionSupport: getModelVisionSupport(
+          provider,
+          model,
+          getVisionSupportForModelIdImpl
+        ),
       }));
       setStoredModelSelection({ provider, modelId: model });
       analytics.track('model selected', {
@@ -1017,7 +1192,7 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
         source_surface: sourceSurface,
       });
     },
-    [analytics, getVisionSupportForModelIdImpl]
+    [analytics, finalizeStreamTurn, getVisionSupportForModelIdImpl]
   );
 
   const newConversation = useCallback(() => {

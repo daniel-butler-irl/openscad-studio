@@ -256,7 +256,7 @@ describe('SettingsDialog privacy copy', () => {
 
     expect(
       await screen.findByText(
-        'Connect hosted API keys or a local OpenAI-compatible server, then choose the model from the chat composer.'
+        'Connect an API key, local OpenAI-compatible server, or desktop subscription account, then choose a model from the chat composer.'
       )
     ).toBeTruthy();
 

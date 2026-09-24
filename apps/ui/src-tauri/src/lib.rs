@@ -2,6 +2,7 @@ mod cmd;
 mod history;
 mod lan;
 mod mcp;
+mod subscriptions;
 mod types;
 
 use cmd::{update_editor_state, update_working_dir, EditorState, OpenScadBinaryState};
@@ -10,8 +11,12 @@ use mcp::{
     record_window_startup_phase, remove_window, update_window_focus, McpServerState,
     WindowLaunchIntent,
 };
+use subscriptions::{
+    SubscriptionAccountStatus, SubscriptionLoginChallenge, SubscriptionModelInfo,
+    SubscriptionProvider, SubscriptionRequest, SubscriptionRequestEvent, SubscriptionRuntime,
+};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{ipc::Channel, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use uuid::Uuid;
 
 pub(crate) fn create_new_window_with_launch_intent(
@@ -74,6 +79,85 @@ fn emit_to_focused_window<T: serde::Serialize + Clone>(
     }
 }
 
+#[tauri::command]
+async fn subscription_get_status(
+    provider: SubscriptionProvider,
+    state: tauri::State<'_, SubscriptionRuntime>,
+) -> Result<SubscriptionAccountStatus, String> {
+    Ok(state.auth.status(provider).await)
+}
+
+#[tauri::command]
+async fn subscription_start_login(
+    provider: SubscriptionProvider,
+    window: WebviewWindow,
+    state: tauri::State<'_, SubscriptionRuntime>,
+) -> Result<SubscriptionLoginChallenge, String> {
+    state.start_login(provider, window.label()).await
+}
+
+#[tauri::command]
+async fn subscription_cancel_login(
+    provider: SubscriptionProvider,
+    login_id: String,
+    window: WebviewWindow,
+    state: tauri::State<'_, SubscriptionRuntime>,
+) -> Result<(), String> {
+    state
+        .cancel_login(provider, &login_id, window.label())
+        .await
+}
+
+#[tauri::command]
+async fn subscription_sign_out(
+    provider: SubscriptionProvider,
+    state: tauri::State<'_, SubscriptionRuntime>,
+) -> Result<u64, String> {
+    state.sign_out(provider).await
+}
+
+#[tauri::command]
+async fn subscription_list_models(
+    provider: SubscriptionProvider,
+    account_generation: u64,
+    state: tauri::State<'_, SubscriptionRuntime>,
+) -> Result<Vec<SubscriptionModelInfo>, String> {
+    let status = state.auth.status(provider).await;
+    if status.generation != account_generation {
+        return Err("The subscription account changed. Refresh the model list.".to_owned());
+    }
+    state
+        .transport
+        .list_models(provider, account_generation)
+        .await
+}
+
+#[tauri::command]
+async fn subscription_start_request(
+    request: SubscriptionRequest,
+    on_event: Channel<SubscriptionRequestEvent>,
+    window: WebviewWindow,
+    state: tauri::State<'_, SubscriptionRuntime>,
+) -> Result<(), String> {
+    state
+        .transport
+        .start_request(window.label().to_owned(), request, on_event)
+        .await
+}
+
+#[tauri::command]
+async fn subscription_cancel_request(
+    request_id: String,
+    window: WebviewWindow,
+    state: tauri::State<'_, SubscriptionRuntime>,
+) -> Result<(), String> {
+    state
+        .transport
+        .cancel_request(window.label(), &request_id)
+        .await;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let editor_state = EditorState::default();
@@ -81,6 +165,9 @@ pub fn run() {
     let openscad_state = OpenScadBinaryState::default();
     let mcp_state = McpServerState::default();
     let window_mcp_state = mcp_state.clone();
+    let subscription_state = SubscriptionRuntime::new()
+        .expect("subscription auth and transport clients should initialize");
+    let window_subscription_state = subscription_state.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
@@ -91,6 +178,7 @@ pub fn run() {
         .manage(openscad_state)
         .manage(mcp_state.clone())
         .manage(lan::LanServerState::default())
+        .manage(subscription_state)
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             update_editor_state,
@@ -117,6 +205,13 @@ pub fn run() {
             mcp::mcp_report_window_startup_phase,
             mcp::report_window_open_result,
             mcp::mcp_update_window_context,
+            subscription_get_status,
+            subscription_start_login,
+            subscription_cancel_login,
+            subscription_sign_out,
+            subscription_list_models,
+            subscription_start_request,
+            subscription_cancel_request,
         ])
         .setup(|app| {
             // Create app menu (About, Hide, Quit, etc.)
@@ -247,6 +342,12 @@ pub fn run() {
             }
             tauri::WindowEvent::Destroyed => {
                 remove_window(&window_mcp_state, window.label());
+                let subscriptions = window_subscription_state.clone();
+                let window_label = window.label().to_owned();
+                tauri::async_runtime::spawn(async move {
+                    subscriptions.cancel_window_logins(&window_label).await;
+                    subscriptions.transport.cancel_window(&window_label).await;
+                });
             }
             tauri::WindowEvent::CloseRequested { .. } => {}
             _ => {}

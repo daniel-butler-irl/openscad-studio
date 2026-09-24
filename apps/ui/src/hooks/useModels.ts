@@ -5,6 +5,12 @@ import {
   type AiProvider,
   type OpenAiCompatibleConfig,
 } from '../stores/apiKeyStore';
+import { refreshSubscriptionModels, useSubscriptionStore } from '../stores/subscriptionStore';
+import type {
+  AiConnectionProvider,
+  SubscriptionModelInfo,
+  SubscriptionProvider,
+} from '../platform/types';
 import { getVisionSupportForModelId } from '../utils/aiMessages';
 import {
   compareModelsByFreshness,
@@ -17,14 +23,22 @@ import type { VisionSupport } from '../types/aiChat';
 export interface ModelInfo {
   id: string;
   display_name: string;
-  provider: AiProvider;
+  provider: AiConnectionProvider;
   visionSupport: VisionSupport;
+  images?: SubscriptionModelInfo['images'];
+  reasoning?: SubscriptionModelInfo['reasoning'];
+  tools?: SubscriptionModelInfo['tools'];
+  apiBackend?: SubscriptionModelInfo['apiBackend'];
+  recommended?: boolean;
+  contextWindow?: number | null;
 }
 
 export interface GroupedModels {
   anthropic: ModelInfo[];
   openai: ModelInfo[];
   openaiCompatible: ModelInfo[];
+  codexSubscription: ModelInfo[];
+  grokSubscription: ModelInfo[];
 }
 
 export interface UseModelsReturn {
@@ -45,6 +59,28 @@ interface CachedModels {
   fetchedAt: number;
   providers?: AiProvider[];
   openAiCompatibleBaseUrl?: string;
+}
+
+const API_PROVIDERS: AiProvider[] = ['anthropic', 'openai', 'openai-compatible'];
+const SUBSCRIPTION_PROVIDERS: SubscriptionProvider[] = ['codex-subscription', 'grok-subscription'];
+
+function toSubscriptionModel(
+  provider: SubscriptionProvider,
+  model: SubscriptionModelInfo
+): ModelInfo {
+  return {
+    id: model.id,
+    display_name: model.name,
+    provider,
+    visionSupport:
+      model.images === 'supported' ? 'yes' : model.images === 'unsupported' ? 'no' : 'unknown',
+    images: model.images,
+    reasoning: model.reasoning,
+    tools: model.tools,
+    apiBackend: model.apiBackend,
+    recommended: model.recommended,
+    contextWindow: model.contextWindow,
+  };
 }
 
 const DEFAULT_MODELS: ModelInfo[] = DEFAULT_MODEL_CATALOG.map((model) => ({
@@ -236,21 +272,34 @@ function saveCache(models: ModelInfo[], providers: readonly string[]): void {
   }
 }
 
-export function useModels(availableProviders: string[]): UseModelsReturn {
+export function useModels(availableProviders: AiConnectionProvider[]): UseModelsReturn {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fromCache, setFromCache] = useState(false);
   const [cacheAgeMinutes, setCacheAgeMinutes] = useState<number | null>(null);
-  const providersRef = useRef(availableProviders);
+  const providersRef = useRef<AiConnectionProvider[]>(availableProviders);
   providersRef.current = availableProviders;
   const providersKey = [...availableProviders].sort().join(',');
+  const { status: subscriptionStatus } = useSubscriptionStore();
+  const subscriptionKey = SUBSCRIPTION_PROVIDERS.filter((provider) =>
+    availableProviders.includes(provider)
+  )
+    .map((provider) => `${provider}:${subscriptionStatus[provider].generation}`)
+    .join(',');
   const requestIdRef = useRef(0);
 
   const doFetch = useCallback(
     async (forceRefresh: boolean) => {
       const requestId = ++requestIdRef.current;
       const providers = providersRef.current;
+      const apiProviders = providers.filter((provider): provider is AiProvider =>
+        API_PROVIDERS.includes(provider as AiProvider)
+      );
+      const activeSubscriptions = SUBSCRIPTION_PROVIDERS.filter(
+        (provider) =>
+          providers.includes(provider) && subscriptionStatus[provider].state === 'signed-in'
+      );
       if (providers.length === 0) {
         if (requestId !== requestIdRef.current) return;
         setModels([]);
@@ -261,17 +310,20 @@ export function useModels(availableProviders: string[]): UseModelsReturn {
         return;
       }
 
-      if (!forceRefresh) {
-        const cached = loadCache(providers);
-        if (cached) {
-          if (requestId !== requestIdRef.current) return;
-          setModels(sortModels(cached.models));
-          setError(null);
-          setFromCache(true);
-          setCacheAgeMinutes(cached.ageMinutes);
-          setIsLoading(false);
-          return;
-        }
+      const cachedApi = !forceRefresh && apiProviders.length > 0 ? loadCache(apiProviders) : null;
+      if (cachedApi && activeSubscriptions.length === 0) {
+        if (requestId !== requestIdRef.current) return;
+        setModels(sortModels(cachedApi.models));
+        setError(null);
+        setFromCache(true);
+        setCacheAgeMinutes(cachedApi.ageMinutes);
+        setIsLoading(false);
+        return;
+      }
+      if (cachedApi && requestId === requestIdRef.current) {
+        setModels(sortModels(cachedApi.models));
+        setFromCache(true);
+        setCacheAgeMinutes(cachedApi.ageMinutes);
       }
 
       setIsLoading(true);
@@ -282,7 +334,7 @@ export function useModels(availableProviders: string[]): UseModelsReturn {
       try {
         const fetches: Promise<{ models: ModelInfo[]; error: string | null }>[] = [];
 
-        if (providers.includes('anthropic')) {
+        if (!cachedApi && providers.includes('anthropic')) {
           const key = getApiKey('anthropic');
           if (key) {
             fetches.push(
@@ -295,7 +347,7 @@ export function useModels(availableProviders: string[]): UseModelsReturn {
             );
           }
         }
-        if (providers.includes('openai')) {
+        if (!cachedApi && providers.includes('openai')) {
           const key = getApiKey('openai');
           if (key) {
             fetches.push(
@@ -308,7 +360,7 @@ export function useModels(availableProviders: string[]): UseModelsReturn {
             );
           }
         }
-        if (providers.includes('openai-compatible')) {
+        if (!cachedApi && providers.includes('openai-compatible')) {
           const config = getOpenAiCompatibleConfig();
           if (config.baseUrl) {
             fetches.push(
@@ -322,8 +374,26 @@ export function useModels(availableProviders: string[]): UseModelsReturn {
           }
         }
 
-        const results = await Promise.all(fetches);
-        const allModels = results.flatMap((result) => result.models);
+        const subscriptionFetches = activeSubscriptions.map(async (provider) => {
+          try {
+            const models = await refreshSubscriptionModels(provider, forceRefresh);
+            return {
+              models: models.map((model) => toSubscriptionModel(provider, model)),
+              error: null,
+            };
+          } catch (error) {
+            return {
+              models: [] as ModelInfo[],
+              error: error instanceof Error ? error.message : String(error),
+            };
+          }
+        });
+
+        const results = await Promise.all([...fetches, ...subscriptionFetches]);
+        const allModels = [
+          ...(cachedApi?.models ?? []),
+          ...results.flatMap((result) => result.models),
+        ];
         const errors = results
           .map((result) => result.error)
           .filter((value): value is string => Boolean(value));
@@ -333,9 +403,12 @@ export function useModels(availableProviders: string[]): UseModelsReturn {
           const sorted = sortModels(allModels);
           setModels(sorted);
           setError(errors.length > 0 ? errors.join('\n') : null);
-          setFromCache(false);
-          setCacheAgeMinutes(null);
-          saveCache(sorted, providers);
+          setFromCache(Boolean(cachedApi));
+          setCacheAgeMinutes(cachedApi?.ageMinutes ?? null);
+          saveCache(
+            sorted.filter((model) => API_PROVIDERS.includes(model.provider as AiProvider)),
+            apiProviders
+          );
         } else {
           const customConfig = getOpenAiCompatibleConfig();
           const customDefaults =
@@ -374,12 +447,12 @@ export function useModels(availableProviders: string[]): UseModelsReturn {
     },
     // providersKey is a stable string serialization — avoids infinite re-renders from array refs
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [providersKey]
+    [providersKey, subscriptionKey]
   );
 
   useEffect(() => {
     void doFetch(false);
-  }, [providersKey, doFetch]);
+  }, [providersKey, subscriptionKey, doFetch]);
 
   const refreshModels = useCallback(() => doFetch(true), [doFetch]);
 
@@ -388,6 +461,8 @@ export function useModels(availableProviders: string[]): UseModelsReturn {
       anthropic: models.filter((m) => m.provider === 'anthropic'),
       openai: models.filter((m) => m.provider === 'openai'),
       openaiCompatible: models.filter((m) => m.provider === 'openai-compatible'),
+      codexSubscription: models.filter((m) => m.provider === 'codex-subscription'),
+      grokSubscription: models.filter((m) => m.provider === 'grok-subscription'),
     }),
     [models]
   );

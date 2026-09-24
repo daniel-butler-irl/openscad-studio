@@ -43,6 +43,7 @@ function fallbackCapabilities(runtimeSurface: RuntimeSurface): PlatformCapabilit
       hasNativeMenu: true,
       hasFileSystem: true,
       canSetWindowTitle: true,
+      hasSubscriptionAuth: false,
     };
   }
 
@@ -51,6 +52,7 @@ function fallbackCapabilities(runtimeSurface: RuntimeSurface): PlatformCapabilit
     hasNativeMenu: false,
     hasFileSystem: false,
     canSetWindowTitle: true,
+    hasSubscriptionAuth: false,
   };
 }
 

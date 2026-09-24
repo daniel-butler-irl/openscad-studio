@@ -36,10 +36,16 @@ Serve a bundled production web build from an opt-in Rust HTTPS server. Generate 
 
 ## Branch context
 
-This feature branches from `main`. Subscription settings remain on the separate, unmerged `subscription-foundation` branch; LAN changes do not alter AI settings.
+Merged `origin/main` at `76c9337` after the subscription feature landed. Both LAN and subscription runtime state and commands are retained, alongside their platform bridge methods and settings UI. Cargo reconciles the combined dependencies from main’s lockfile.
 
 ## Handoff
 
 Implementation commit: `5417ccb`. Draft PR description prepared in `/tmp/studio-lan-pr.md`. The user explicitly approved the live LAN test and publishing a draft PR to `daniel-butler-irl/openscad-studio`. LAN hosting was stopped after verification.
 
 Draft PR: https://github.com/daniel-butler-irl/openscad-studio/pull/2 (base: `main`).
+
+## Merge follow-up
+
+- [x] Resolve Tauri state registration and Cargo.lock conflicts with current main
+- [x] Validate the combined LAN and subscription implementation (628 frontend tests, 39 Rust tests, baseline/Rust checks and web production build passed)
+- [ ] Push the merge and confirm PR mergeability

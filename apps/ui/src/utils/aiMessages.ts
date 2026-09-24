@@ -36,7 +36,8 @@ export function toolResultToOutput(result: unknown) {
 
 export function messagesToModelMessages(
   messages: Message[],
-  attachments: AttachmentStore
+  attachments: AttachmentStore,
+  continuationScope?: { provider: string; accountGeneration: number }
 ): ModelMessage[] {
   const modelMessages: ModelMessage[] = [];
   let pendingToolCalls: Array<{
@@ -80,9 +81,30 @@ export function messagesToModelMessages(
       });
     } else if (msg.type === 'assistant') {
       flushPendingToolMessages();
+      const continuation = msg.continuation;
+      const canContinue =
+        continuation &&
+        continuationScope?.provider === continuation.provider &&
+        continuationScope.accountGeneration === continuation.accountGeneration;
       modelMessages.push({
         role: 'assistant' as const,
-        content: [{ type: 'text' as const, text: msg.content }],
+        content: [
+          ...(canContinue
+            ? [
+                {
+                  type: 'reasoning' as const,
+                  text: '',
+                  providerOptions: {
+                    openai: {
+                      itemId: continuation.itemId,
+                      reasoningEncryptedContent: continuation.encryptedContent,
+                    },
+                  },
+                },
+              ]
+            : []),
+          { type: 'text' as const, text: msg.content },
+        ],
       });
     } else if (msg.type === 'tool-call' && msg.state === 'completed') {
       const toolCall = msg as ToolCallMessage;
