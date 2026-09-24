@@ -48,4 +48,4 @@ Draft PR: https://github.com/daniel-butler-irl/openscad-studio/pull/2 (base: `ma
 
 - [x] Resolve Tauri state registration and Cargo.lock conflicts with current main
 - [x] Validate the combined LAN and subscription implementation (628 frontend tests, 39 Rust tests, baseline/Rust checks and web production build passed)
-- [ ] Push the merge and confirm PR mergeability
+- [x] Push the merge and confirm PR mergeability (`55830fe`; GitHub reports MERGEABLE)
