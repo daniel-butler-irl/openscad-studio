@@ -29,5 +29,12 @@ Use separate API-key and subscription provider types. A discriminated connection
 - [x] Integrate provider catalogs, desktop settings, model selection, chat streaming, multimodal capabilities, and account-scoped stateless continuation.
 - [x] Add focused Rust and frontend tests for session isolation, lifecycle races, protocol errors, and stream cancellation.
 - [x] Update architecture and user setup documentation, including upstream attribution and license notices.
-- [ ] Run baseline and Rust validation, web and desktop builds, diff checks, and report live acceptance limits.
-- [ ] Refresh graft, open a draft PR targeting `main`, and return the confirmed preview URL if published.
+- [x] Run baseline and Rust validation, web and desktop builds, diff checks, and report live acceptance limits.
+  - Baseline: `scripts/validate-changes.sh --scope baseline` passed (85 suites, 618 tests).
+  - Rust: `scripts/validate-changes.sh --scope rust` passed; `cargo test --lib` passed (33 tests).
+  - Web production build and Tauri debug app bundle completed successfully.
+  - Live provider sign-in and restart persistence remain for the user’s manual acceptance; no credentials were accessed during automated validation.
+- [x] Refresh graft after the implementation.
+- [ ] Open a draft PR targeting `main`; return the confirmed preview URL if published.
+
+The latest macOS debug bundle is `apps/ui/src-tauri/target/debug/bundle/macos/OpenSCAD Studio.app`. It was built but not launched or installed during final validation.
