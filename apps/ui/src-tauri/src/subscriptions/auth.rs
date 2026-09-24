@@ -430,10 +430,7 @@ impl NativeSubscriptionAuth {
                 let error = oauth_error(response).await;
                 match error.as_deref() {
                     Some("authorization_pending") => continue,
-                    Some("slow_down") => {
-                        poll_interval =
-                            (poll_interval + Duration::from_secs(5)).min(Duration::from_secs(30))
-                    }
+                    Some("slow_down") => poll_interval = next_grok_poll_interval(poll_interval),
                     Some("access_denied" | "authorization_denied") => {
                         return Err(AuthError::Denied)
                     }
