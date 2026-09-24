@@ -56,7 +56,7 @@ pub struct SubscriptionAccountStatus {
 /// Rust-only authenticated material. Deliberately has no `Serialize`, `Debug`, or `Clone` impl.
 pub struct AuthorizedSession {
     pub(crate) access_token: String,
-    pub(crate) account_id: String,
+    pub(crate) account_id: Option<String>,
     pub(crate) generation: u64,
 }
 
