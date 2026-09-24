@@ -396,9 +396,11 @@ export const AiPromptPanel = forwardRef<AiPromptPanelRef, AiPromptPanelProps>(
   ) => {
     const analytics = useAnalytics();
     const hasApiKey = useHasApiKey();
-    const hasAiConnection = hasApiKey || availableProviders.some(
-      (provider) => provider === 'codex-subscription' || provider === 'grok-subscription'
-    );
+    const hasAiConnection =
+      hasApiKey ||
+      availableProviders.some(
+        (provider) => provider === 'codex-subscription' || provider === 'grok-subscription'
+      );
     const responseRef = useRef<HTMLDivElement>(null);
     const composerRef = useRef<AiComposerRef>(null);
     const emptyStateHostRef = useRef<HTMLDivElement>(null);

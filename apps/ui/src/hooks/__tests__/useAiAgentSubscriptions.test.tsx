@@ -20,7 +20,12 @@ const bridge: SubscriptionBridge = {
   startLogin: jest.fn(),
   cancelLogin: jest.fn(),
   signOut: jest.fn(async () => {
-    status = { ...status, state: 'signed-out', accountId: null, generation: status.generation + 1 } as typeof status;
+    status = {
+      ...status,
+      state: 'signed-out',
+      accountId: null,
+      generation: status.generation + 1,
+    } as typeof status;
   }),
   listModels: jest.fn(async () => []),
   startRequest: jest.fn(async () => {}),
@@ -41,7 +46,12 @@ const [{ useAiAgent }, store] = await Promise.all([
 describe('useAiAgent subscription continuation', () => {
   beforeEach(() => {
     localStorage.clear();
-    status = { provider: 'codex-subscription', state: 'signed-in', accountId: 'codex-test', generation: 9 };
+    status = {
+      provider: 'codex-subscription',
+      state: 'signed-in',
+      accountId: 'codex-test',
+      generation: 9,
+    };
     setStoredModelSelection({ provider: 'codex-subscription', modelId: 'gpt-5.4-codex' });
     jest.clearAllMocks();
   });
@@ -52,7 +62,13 @@ describe('useAiAgent subscription continuation', () => {
     const streamCalls: Array<Record<string, unknown>> = [];
     const streams = [
       createStreamResult([
-        { type: 'reasoning-end', id: 'reason-1', providerMetadata: { openai: { itemId: 'reasoning-item-9', reasoningEncryptedContent: 'sealed-reasoning' } } } as never,
+        {
+          type: 'reasoning-end',
+          id: 'reason-1',
+          providerMetadata: {
+            openai: { itemId: 'reasoning-item-9', reasoningEncryptedContent: 'sealed-reasoning' },
+          },
+        } as never,
         { type: 'text-start', id: 'text-1' } as never,
         { type: 'text-delta', id: 'text-1', text: 'First answer.' } as never,
         { type: 'text-end', id: 'text-1' } as never,
@@ -65,18 +81,23 @@ describe('useAiAgent subscription continuation', () => {
         { type: 'finish', finishReason: 'stop' } as never,
       ]),
     ];
-    const hook = createHookHarness(() => useAiAgent({
-      testOverrides: {
-        analytics: analytics as never,
-        availableProviders: testProviders as never,
-        createModel: ((...args: unknown[]) => { modelCalls.push(args); return {}; }) as never,
-        buildTools: (() => ({})) as never,
-        startAiStream: ((options: Record<string, unknown>) => {
-          streamCalls.push(options);
-          return Promise.resolve(streams.shift()!);
-        }) as never,
-      },
-    }));
+    const hook = createHookHarness(() =>
+      useAiAgent({
+        testOverrides: {
+          analytics: analytics as never,
+          availableProviders: testProviders as never,
+          createModel: ((...args: unknown[]) => {
+            modelCalls.push(args);
+            return {};
+          }) as never,
+          buildTools: (() => ({})) as never,
+          startAiStream: ((options: Record<string, unknown>) => {
+            streamCalls.push(options);
+            return Promise.resolve(streams.shift()!);
+          }) as never,
+        },
+      })
+    );
 
     await waitFor(() => expect(hook.current().availableProviders).toContain('codex-subscription'));
     await act(async () => hook.current().submitPrompt('First prompt'));
@@ -84,8 +105,10 @@ describe('useAiAgent subscription continuation', () => {
     const firstAssistant = hook.current().messages.find((message) => message.type === 'assistant');
     expect(firstAssistant).toMatchObject({
       continuation: {
-        provider: 'codex-subscription', accountGeneration: 9,
-        itemId: 'reasoning-item-9', encryptedContent: 'sealed-reasoning',
+        provider: 'codex-subscription',
+        accountGeneration: 9,
+        itemId: 'reasoning-item-9',
+        encryptedContent: 'sealed-reasoning',
       },
     });
 
@@ -97,7 +120,11 @@ describe('useAiAgent subscription continuation', () => {
     expect(modelCalls[0]).toContain('native-managed');
 
     act(() => hook.current().setCurrentModel('claude-sonnet-4-5', 'unknown', 'anthropic'));
-    expect(hook.current().messages.some((message) => message.type === 'assistant' && message.continuation)).toBe(false);
+    expect(
+      hook
+        .current()
+        .messages.some((message) => message.type === 'assistant' && message.continuation)
+    ).toBe(false);
     await act(async () => store.signOutSubscription('codex-subscription'));
     hook.unmount();
   });

@@ -99,10 +99,17 @@ describe('WelcomeScreen', () => {
           accountId: null,
           generation: 2,
         })),
-        listModels: jest.fn(async () => [{
-          id: 'grok-4.6', name: 'Grok 4.6', apiBackend: 'chat-completions',
-          images: 'supported', reasoning: 'supported', tools: 'supported', recommended: true,
-        }]),
+        listModels: jest.fn(async () => [
+          {
+            id: 'grok-4.6',
+            name: 'Grok 4.6',
+            apiBackend: 'chat-completions',
+            images: 'supported',
+            reasoning: 'supported',
+            tools: 'supported',
+            recommended: true,
+          },
+        ]),
       },
     });
 

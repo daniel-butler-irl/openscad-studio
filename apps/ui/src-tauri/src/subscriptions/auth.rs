@@ -977,7 +977,10 @@ fn token_account_id(provider: SubscriptionProvider, tokens: &TokenResponse) -> O
     match provider {
         SubscriptionProvider::CodexSubscription => codex_account,
         SubscriptionProvider::GrokSubscription => codex_account.or_else(|| {
-            claims.get("sub").and_then(serde_json::Value::as_str).map(str::to_owned)
+            claims
+                .get("sub")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
         }),
     }
 }
@@ -1059,7 +1062,10 @@ mod tests {
             "https://api.openai.com/auth": { "chatgpt_account_id": "chatgpt-account" }
         });
         assert_eq!(
-            token_account_id(SubscriptionProvider::CodexSubscription, &token_with_claims(codex_claims)),
+            token_account_id(
+                SubscriptionProvider::CodexSubscription,
+                &token_with_claims(codex_claims)
+            ),
             Some("chatgpt-account".into())
         );
         let subject_only = token_with_claims(serde_json::json!({ "sub": "user-subject" }));

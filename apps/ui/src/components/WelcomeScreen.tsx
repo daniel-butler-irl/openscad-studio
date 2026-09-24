@@ -89,9 +89,11 @@ export function WelcomeScreen({
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
   const [recentFilesReady, setRecentFilesReady] = useState(!showRecentFiles);
   const hasApiKey = useHasApiKey();
-  const hasAiConnection = hasApiKey || availableProviders.some(
-    (provider) => provider === 'codex-subscription' || provider === 'grok-subscription'
-  );
+  const hasAiConnection =
+    hasApiKey ||
+    availableProviders.some(
+      (provider) => provider === 'codex-subscription' || provider === 'grok-subscription'
+    );
 
   // Shorten home directory to ~/ for display
   const displayPath = useMemo(() => {
@@ -245,7 +247,9 @@ export function WelcomeScreen({
                       onStartWithDraft({ text: example, attachmentIds: [] });
                     }}
                     disabled={!hasAiConnection}
-                    title={!hasAiConnection ? 'Configure an AI provider in Settings to use AI' : example}
+                    title={
+                      !hasAiConnection ? 'Configure an AI provider in Settings to use AI' : example
+                    }
                   >
                     {example}
                   </Button>

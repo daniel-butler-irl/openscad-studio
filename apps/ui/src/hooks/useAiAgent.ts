@@ -254,7 +254,7 @@ interface UseAiAgentOptions {
 export function useAiAgent(options: UseAiAgentOptions = {}) {
   const defaultAnalytics = useAnalytics();
   const defaultAvailableProviders = useAvailableAiConnections();
-  const { status: subscriptionStatus, models: subscriptionModels } = useSubscriptionStore();
+  const { status: subscriptionStatus } = useSubscriptionStore();
   const overrides = options.testOverrides;
   const analytics = overrides?.analytics ?? defaultAnalytics;
   const availableProviders = overrides?.availableProviders ?? defaultAvailableProviders;
@@ -481,7 +481,7 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
         availableProviders
       );
     }
-  }, [availableProviders, getVisionSupportForModelIdImpl, subscriptionModels]);
+  }, [availableProviders, getVisionSupportForModelIdImpl]);
 
   useEffect(() => {
     loadModelAndProviders();
@@ -679,7 +679,7 @@ export function useAiAgent(options: UseAiAgentOptions = {}) {
     finalizeStreamTurn,
     state.currentProvider,
     state.isStreaming,
-    subscriptionStatus['codex-subscription'].generation,
+    codexAccountGeneration,
     subscriptionStatus['codex-subscription'].state,
   ]);
 

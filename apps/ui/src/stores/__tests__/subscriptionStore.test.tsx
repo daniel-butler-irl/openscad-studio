@@ -26,18 +26,25 @@ const native = {
   })),
   cancelLogin: jest.fn(async () => {}),
   signOut: jest.fn(async () => {
-    account = { ...account, state: 'signed-out', accountId: null, generation: account.generation + 1 };
+    account = {
+      ...account,
+      state: 'signed-out',
+      accountId: null,
+      generation: account.generation + 1,
+    };
   }),
-  listModels: jest.fn(async () => [{
-    id: 'gpt-5.4-codex',
-    name: 'GPT-5.4 Codex',
-    apiBackend: 'responses' as const,
-    images: 'supported' as const,
-    reasoning: 'supported' as const,
-    tools: 'supported' as const,
-    recommended: true,
-    contextWindow: 256000,
-  }]),
+  listModels: jest.fn(async () => [
+    {
+      id: 'gpt-5.4-codex',
+      name: 'GPT-5.4 Codex',
+      apiBackend: 'responses' as const,
+      images: 'supported' as const,
+      reasoning: 'supported' as const,
+      tools: 'supported' as const,
+      recommended: true,
+      contextWindow: 256000,
+    },
+  ]),
   startRequest: jest.fn(async () => {}),
   cancelRequest: jest.fn(async () => {}),
 };
@@ -59,28 +66,44 @@ function Harness() {
   if (previousConnections === connections) stableConnectionsObserved = true;
   previousConnections = connections;
   const { groupedByProvider } = modelsModule.useModels(['openai', 'codex-subscription']);
-  return <div>
-    <span data-testid="connections">{connections.join(',')}</span>
-    <span data-testid="api-models">{groupedByProvider.openai.map((model) => model.id).join(',')}</span>
-    <span data-testid="codex-models">{groupedByProvider.codexSubscription.map((model) => model.id).join(',')}</span>
-  </div>;
+  return (
+    <div>
+      <span data-testid="connections">{connections.join(',')}</span>
+      <span data-testid="api-models">
+        {groupedByProvider.openai.map((model) => model.id).join(',')}
+      </span>
+      <span data-testid="codex-models">
+        {groupedByProvider.codexSubscription.map((model) => model.id).join(',')}
+      </span>
+    </div>
+  );
 }
 
 describe('subscriptionStore', () => {
   beforeEach(() => {
     localStorage.clear();
-    account = { provider: 'codex-subscription', state: 'signed-in', accountId: 'account-test', generation: 3 };
+    account = {
+      provider: 'codex-subscription',
+      state: 'signed-in',
+      accountId: 'account-test',
+      generation: 3,
+    };
     jest.clearAllMocks();
     previousConnections = null;
     stableConnectionsObserved = false;
   });
 
   it('exposes signed-in readiness and merges a native catalog with cached API models; sign-out clears it', async () => {
-    localStorage.setItem('openscad_studio_models_cache', JSON.stringify({
-      models: [{ id: 'gpt-5.4', display_name: 'GPT-5.4', provider: 'openai', visionSupport: 'yes' }],
-      providers: ['openai'],
-      fetchedAt: Date.now(),
-    }));
+    localStorage.setItem(
+      'openscad_studio_models_cache',
+      JSON.stringify({
+        models: [
+          { id: 'gpt-5.4', display_name: 'GPT-5.4', provider: 'openai', visionSupport: 'yes' },
+        ],
+        providers: ['openai'],
+        fetchedAt: Date.now(),
+      })
+    );
 
     const view = render(<Harness />);
     await waitFor(() => {
