@@ -1423,6 +1423,7 @@ mod tests {
                 &stored_refresh("refresh-old"),
             )
             .unwrap();
+        store.write_count.store(0, Ordering::SeqCst);
         let auth = NativeSubscriptionAuth::with_test_store(store.clone(), issuer);
         let (status, session) = tokio::join!(
             auth.status(SubscriptionProvider::GrokSubscription),

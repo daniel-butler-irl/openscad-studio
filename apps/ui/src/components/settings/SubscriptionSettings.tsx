@@ -193,6 +193,11 @@ export function SubscriptionSettings({ isOpen }: { isOpen: boolean }) {
                   <Text variant="caption" color="secondary">
                     {account.accountId ? `Signed in as ${account.accountId}` : 'Account connected'}
                   </Text>
+                  {account.message ? (
+                    <Text variant="caption" color="error" role="alert">
+                      {account.message}
+                    </Text>
+                  ) : null}
                   <Button
                     type="button"
                     size="sm"

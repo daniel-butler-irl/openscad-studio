@@ -16,6 +16,10 @@ Use separate API-key and subscription provider types. A discriminated connection
 - Rust dependencies, command registration, and desktop credential/session handling
 - `AGENTS.md`, `CLAUDE.md`, provider setup documentation, and attribution notices
 
+## Keychain prompt follow-up
+
+Repeated status polling and concurrent session restoration could read the same OS credential repeatedly. Native auth now hydrates each provider’s stored credential once per app session, shares concurrent reads, caches read failures until an explicit reconnect, and updates or invalidates the cache on sign-in, refresh, and sign-out. The settings panel keeps its fast status poll only while a login challenge is pending. If replacing a refresh credential fails while the current access token remains usable, Settings displays a sanitized reconnect warning.
+
 ## Checklist
 
 - [x] Establish typed API/subscription provider and connection contracts; record and review bridge interfaces.
@@ -28,14 +32,16 @@ Use separate API-key and subscription provider types. A discriminated connection
   - [x] Add SDK-compatible fetch adapter and fragmented Responses tool-call/result regression.
 - [x] Integrate provider catalogs, desktop settings, model selection, chat streaming, multimodal capabilities, and account-scoped stateless continuation.
 - [x] Add focused Rust and frontend tests for session isolation, lifecycle races, protocol errors, and stream cancellation.
+  - [x] Cover concurrent status/session hydration, cached keychain failures and reconnect, sign-out during a blocked read, and failed reconnect with preserved access.
+  - [x] Cover fast-poll stop on successful/failed login and the signed-in reconnect warning.
 - [x] Update architecture and user setup documentation, including upstream attribution and license notices.
 - [x] Run baseline and Rust validation, web and desktop builds, diff checks, and report live acceptance limits.
-  - Baseline: `scripts/validate-changes.sh --scope baseline` passed (85 suites, 618 tests).
-  - Rust: `scripts/validate-changes.sh --scope rust` passed; `cargo test --lib` passed (33 tests).
+  - Baseline: `scripts/validate-changes.sh --scope baseline` passed (86 suites, 621 tests).
+  - Rust: `scripts/validate-changes.sh --scope rust` passed; `cargo test --lib` passed (36 tests).
   - Web production build and Tauri debug app bundle completed successfully.
   - Live provider sign-in and restart persistence remain for the user’s manual acceptance; no credentials were accessed during automated validation.
 - [x] Refresh graft after the implementation.
 - [x] Open draft PR [#1](https://github.com/daniel-butler-irl/openscad-studio/pull/1) targeting `main`.
 - [x] Check preview status; GitHub currently reports zero registered Actions workflows, so no PR preview URL was produced.
 
-The latest macOS debug bundle is `apps/ui/src-tauri/target/debug/bundle/macos/OpenSCAD Studio.app`. It was built but not launched or installed during final validation.
+The latest macOS debug bundle is `apps/ui/src-tauri/target/debug/bundle/macos/OpenSCAD Studio.app`. It was built but not launched or installed during final validation. Automated tests use injected credential stores; no OS Keychain probe was run.

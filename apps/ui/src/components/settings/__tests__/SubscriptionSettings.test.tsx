@@ -1,6 +1,6 @@
 /** @jest-environment jsdom */
 
-import { act, render } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { jest } from '@jest/globals';
 import type { SubscriptionAccountStatus, SubscriptionLoginStart } from '../../../platform/types';
 
@@ -38,9 +38,10 @@ const { SubscriptionSettings } = await import('../SubscriptionSettings');
 
 function account(
   provider: 'codex-subscription' | 'grok-subscription',
-  state: SubscriptionAccountStatus['state']
+  state: SubscriptionAccountStatus['state'],
+  message?: string
 ): SubscriptionAccountStatus {
-  return { provider, state, accountId: null, generation: 0 };
+  return { provider, state, accountId: null, generation: 0, message };
 }
 
 function pendingLogin(): SubscriptionLoginStart {
@@ -97,4 +98,23 @@ describe('SubscriptionSettings status polling', () => {
       view.unmount();
     }
   );
+
+  it('shows a safe reconnect warning while keeping the account connected', () => {
+    snapshot = {
+      status: {
+        'codex-subscription': account(
+          'codex-subscription',
+          'signed-in',
+          'Could not save refreshed subscription credentials. Reconnect to keep access after restart.'
+        ),
+        'grok-subscription': account('grok-subscription', 'signed-out'),
+      },
+      pendingLogins: {},
+      errors: {},
+    };
+
+    render(<SubscriptionSettings isOpen />);
+    expect(screen.getByRole('alert').textContent).toContain('Reconnect');
+    expect(screen.getByText('Account connected')).toBeTruthy();
+  });
 });
