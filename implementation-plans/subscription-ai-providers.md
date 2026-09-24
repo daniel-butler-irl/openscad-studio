@@ -35,6 +35,7 @@ Use separate API-key and subscription provider types. A discriminated connection
   - Web production build and Tauri debug app bundle completed successfully.
   - Live provider sign-in and restart persistence remain for the user’s manual acceptance; no credentials were accessed during automated validation.
 - [x] Refresh graft after the implementation.
-- [ ] Open a draft PR targeting `main`; return the confirmed preview URL if published.
+- [x] Open draft PR [#1](https://github.com/daniel-butler-irl/openscad-studio/pull/1) targeting `main`.
+- [x] Check preview status; GitHub currently reports zero registered Actions workflows, so no PR preview URL was produced.
 
 The latest macOS debug bundle is `apps/ui/src-tauri/target/debug/bundle/macos/OpenSCAD Studio.app`. It was built but not launched or installed during final validation.
