@@ -16,6 +16,7 @@ describe('platform bootstrap', () => {
       hasNativeMenu: false,
       hasFileSystem: false,
       canSetWindowTitle: true,
+      hasSubscriptionAuth: false,
     });
   });
 
@@ -28,6 +29,7 @@ describe('platform bootstrap', () => {
       hasNativeMenu: true,
       hasFileSystem: true,
       canSetWindowTitle: true,
+      hasSubscriptionAuth: false,
     });
   });
 

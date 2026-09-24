@@ -17,6 +17,7 @@ const capabilities: PlatformCapabilities = {
   hasNativeMenu: true,
   hasFileSystem: true,
   canSetWindowTitle: true,
+  hasSubscriptionAuth: false,
 };
 
 export class TauriBridge implements PlatformBridge {

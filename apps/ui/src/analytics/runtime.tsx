@@ -100,6 +100,7 @@ function getFallbackCapabilities(runtimeSurface: RuntimeSurface): PlatformCapabi
       hasNativeMenu: true,
       hasFileSystem: true,
       canSetWindowTitle: true,
+      hasSubscriptionAuth: false,
     };
   }
 
@@ -108,6 +109,7 @@ function getFallbackCapabilities(runtimeSurface: RuntimeSurface): PlatformCapabi
     hasNativeMenu: false,
     hasFileSystem: false,
     canSetWindowTitle: true,
+    hasSubscriptionAuth: false,
   };
 }
 
