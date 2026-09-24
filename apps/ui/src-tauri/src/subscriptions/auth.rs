@@ -852,7 +852,7 @@ impl NativeSubscriptionAuth {
             .refresh_token
             .clone()
             .unwrap_or(stored.refresh_token);
-        let account_id = token_account_id(provider, &refreshed).or(stored.account_id);
+        let account_id = token_account_id(provider, &refreshed).or(stored.account_id.clone());
         let rotated_credential = StoredCredential {
             refresh_token,
             account_id: account_id.clone(),
@@ -1585,6 +1585,7 @@ mod tests {
             )])),
             fail_reads: false,
             fail_writes: true,
+            ..MemoryStore::default()
         });
         let auth = NativeSubscriptionAuth::with_test_store(store.clone(), issuer);
         assert!(matches!(
