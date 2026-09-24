@@ -5,6 +5,9 @@ import { jest } from '@jest/globals';
 import { createAnalyticsSpy, createHookHarness, createStreamResult } from './test-utils';
 import { setStoredModelSelection } from '../../stores/apiKeyStore';
 import type { SubscriptionBridge } from '../../platform/types';
+import type { AiConnectionProvider } from '../../platform/types';
+
+const testProviders: AiConnectionProvider[] = ['codex-subscription', 'anthropic'];
 
 let status = {
   provider: 'codex-subscription' as const,
@@ -65,7 +68,7 @@ describe('useAiAgent subscription continuation', () => {
     const hook = createHookHarness(() => useAiAgent({
       testOverrides: {
         analytics: analytics as never,
-        availableProviders: ['codex-subscription', 'anthropic'] as never,
+        availableProviders: testProviders as never,
         createModel: ((...args: unknown[]) => { modelCalls.push(args); return {}; }) as never,
         buildTools: (() => ({})) as never,
         startAiStream: ((options: Record<string, unknown>) => {

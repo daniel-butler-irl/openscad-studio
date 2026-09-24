@@ -1040,6 +1040,39 @@ mod tests {
         .unwrap()
     }
 
+    fn token_with_claims(claims: serde_json::Value) -> TokenResponse {
+        TokenResponse {
+            access_token: format!(
+                "header.{}.signature",
+                URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+            ),
+            refresh_token: None,
+            expires_in: None,
+            id_token: None,
+        }
+    }
+
+    #[test]
+    fn account_identity_is_provider_specific() {
+        let codex_claims = serde_json::json!({
+            "sub": "user-subject",
+            "https://api.openai.com/auth": { "chatgpt_account_id": "chatgpt-account" }
+        });
+        assert_eq!(
+            token_account_id(SubscriptionProvider::CodexSubscription, &token_with_claims(codex_claims)),
+            Some("chatgpt-account".into())
+        );
+        let subject_only = token_with_claims(serde_json::json!({ "sub": "user-subject" }));
+        assert_eq!(
+            token_account_id(SubscriptionProvider::CodexSubscription, &subject_only),
+            None
+        );
+        assert_eq!(
+            token_account_id(SubscriptionProvider::GrokSubscription, &subject_only),
+            Some("user-subject".into())
+        );
+    }
+
     async fn mock_tokens(
         responses: Vec<&'static str>,
     ) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
