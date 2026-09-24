@@ -1,0 +1,706 @@
+//! Native subscription authentication.
+//!
+//! Refresh credentials are stored as one Keychain/credential-manager item per provider. Access
+//! tokens remain in memory. No API returns a credential to the webview.
+
+use super::{
+    AuthorizedSession, LoginKind, SessionError, SubscriptionAccountState, SubscriptionAccountStatus,
+    SubscriptionLoginChallenge, SubscriptionProvider, SubscriptionSessions,
+};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use keyring::Entry;
+use reqwest::{Client, Response, StatusCode};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::HashMap,
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex as StdMutex},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+    sync::Mutex,
+    task::JoinHandle,
+    time::{sleep, timeout},
+};
+use tokio_util::sync::CancellationToken;
+use url::Url;
+use uuid::Uuid;
+
+const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+const CODEX_ISSUER: &str = "https://auth.openai.com";
+const CODEX_CALLBACK: &str = "http://localhost:1455/auth/callback";
+const GROK_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
+const GROK_ISSUER: &str = "https://auth.x.ai";
+const KEYRING_SERVICE: &str = "com.openscad-studio.subscriptions";
+const MAX_LOGIN_LIFETIME: Duration = Duration::from_secs(5 * 60);
+
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Synchronous storage boundary so tests can use a synthetic in-memory store.
+pub trait CredentialStore: Send + Sync + 'static {
+    fn read(&self, provider: SubscriptionProvider) -> Result<Option<String>, ()>;
+    fn write(&self, provider: SubscriptionProvider, value: &str) -> Result<(), ()>;
+    fn delete(&self, provider: SubscriptionProvider) -> Result<(), ()>;
+}
+
+#[derive(Default)]
+pub struct KeychainCredentialStore;
+
+impl CredentialStore for KeychainCredentialStore {
+    fn read(&self, provider: SubscriptionProvider) -> Result<Option<String>, ()> {
+        let entry = credential_entry(provider)?;
+        match entry.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(_) => Err(()),
+        }
+    }
+
+    fn write(&self, provider: SubscriptionProvider, value: &str) -> Result<(), ()> {
+        credential_entry(provider)?.set_password(value).map_err(|_| ())
+    }
+
+    fn delete(&self, provider: SubscriptionProvider) -> Result<(), ()> {
+        match credential_entry(provider)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err(()),
+        }
+    }
+}
+
+fn credential_entry(provider: SubscriptionProvider) -> Result<Entry, ()> {
+    Entry::new(KEYRING_SERVICE, provider_key(provider)).map_err(|_| ())
+}
+
+fn provider_key(provider: SubscriptionProvider) -> &'static str {
+    match provider {
+        SubscriptionProvider::CodexSubscription => "codex-subscription",
+        SubscriptionProvider::GrokSubscription => "grok-subscription",
+    }
+}
+
+#[derive(Clone)]
+pub struct NativeSubscriptionAuth {
+    inner: Arc<AuthInner>,
+}
+
+struct AuthInner {
+    http: Client,
+    store: Arc<dyn CredentialStore>,
+    states: [Mutex<SessionState>; 2],
+    refresh_locks: [Mutex<()>; 2],
+    logins: StdMutex<HashMap<String, PendingLogin>>,
+    endpoints: EndpointSet,
+}
+
+#[derive(Default)]
+struct SessionState {
+    generation: u64,
+    access_token: Option<String>,
+    account_id: Option<String>,
+    access_expires_at: Option<Instant>,
+}
+
+struct PendingLogin {
+    provider: SubscriptionProvider,
+    cancellation: CancellationToken,
+    task: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+struct EndpointSet {
+    codex_issuer: String,
+    codex_callback: String,
+    grok_issuer: String,
+}
+
+impl Default for EndpointSet {
+    fn default() -> Self {
+        Self {
+            codex_issuer: CODEX_ISSUER.into(),
+            codex_callback: CODEX_CALLBACK.into(),
+            grok_issuer: GROK_ISSUER.into(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredCredential {
+    refresh_token: String,
+    account_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TokenResponse {
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_in: Option<u64>,
+    id_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OAuthError {
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GrokDeviceStart {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    verification_uri_complete: Option<String>,
+    expires_in: Option<u64>,
+    interval: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct CodexDeviceStart {
+    device_auth_id: String,
+    user_code: String,
+    interval: Option<u64>,
+    expires_in: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct CodexDevicePoll {
+    authorization_code: Option<String>,
+    code_verifier: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthError {
+    Cancelled,
+    Expired,
+    Denied,
+    Network,
+    InvalidResponse,
+    StorageUnavailable,
+    AlreadyPending,
+}
+
+impl NativeSubscriptionAuth {
+    pub fn new() -> Result<Self, AuthError> {
+        Self::with_store(Arc::new(KeychainCredentialStore))
+    }
+
+    pub fn with_store(store: Arc<dyn CredentialStore>) -> Result<Self, AuthError> {
+        let http = Client::builder()
+            .timeout(Duration::from_secs(20))
+            .user_agent(concat!("OpenSCAD-Studio/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|_| AuthError::Network)?;
+        Ok(Self {
+            inner: Arc::new(AuthInner {
+                http,
+                store,
+                states: [Mutex::new(SessionState::default()), Mutex::new(SessionState::default())],
+                refresh_locks: [Mutex::new(()), Mutex::new(())],
+                logins: StdMutex::new(HashMap::new()),
+                endpoints: EndpointSet::default(),
+            }),
+        })
+    }
+
+    fn state(&self, provider: SubscriptionProvider) -> &Mutex<SessionState> {
+        &self.inner.states[provider_index(provider)]
+    }
+
+    /// Starts the provider's browser PKCE flow or device-code fallback and returns only display
+    /// information. The credential exchange continues in a native task.
+    pub async fn start_login(
+        &self,
+        provider: SubscriptionProvider,
+    ) -> Result<SubscriptionLoginChallenge, AuthError> {
+        let starting_generation = self.state(provider).lock().await.generation;
+        if self
+            .inner
+            .logins
+            .lock()
+            .map_err(|_| AuthError::InvalidResponse)?
+            .values()
+            .any(|pending| pending.provider == provider)
+        {
+            return Err(AuthError::AlreadyPending);
+        }
+
+        let (challenge, future) = match provider {
+            SubscriptionProvider::GrokSubscription => self.start_grok_device_login().await?,
+            SubscriptionProvider::CodexSubscription => {
+                match self.start_codex_browser_login().await {
+                    Ok(value) => value,
+                    Err(_) => self.start_codex_device_login().await?,
+                }
+            }
+        };
+        let login_id = challenge.login_id.clone();
+        let cancellation = CancellationToken::new();
+        let task_cancel = cancellation.clone();
+        let auth = self.clone();
+        self.inner
+            .logins
+            .lock()
+            .map_err(|_| AuthError::InvalidResponse)?
+            .insert(
+                login_id.clone(),
+                PendingLogin {
+                    provider,
+                    cancellation: cancellation.clone(),
+                    task: None,
+                },
+            );
+        let task = tokio::spawn(async move {
+            let result = tokio::select! {
+                _ = task_cancel.cancelled() => Err(AuthError::Cancelled),
+                result = future => result,
+            };
+            if let Ok(tokens) = result {
+                let _ = auth.install_tokens(provider, starting_generation, tokens).await;
+            }
+            if let Ok(mut logins) = auth.inner.logins.lock() {
+                logins.remove(&login_id);
+            }
+        });
+        if let Ok(mut logins) = self.inner.logins.lock() {
+            if let Some(pending) = logins.get_mut(&login_id) {
+                pending.task = Some(task);
+            }
+        }
+        Ok(challenge)
+    }
+
+    pub fn cancel_login(
+        &self,
+        provider: SubscriptionProvider,
+        login_id: &str,
+    ) -> Result<(), AuthError> {
+        let mut logins = self
+            .inner
+            .logins
+            .lock()
+            .map_err(|_| AuthError::InvalidResponse)?;
+        if logins.get(login_id).is_some_and(|pending| pending.provider == provider) {
+            if let Some(pending) = logins.remove(login_id) {
+                pending.cancellation.cancel();
+                if let Some(task) = pending.task { task.abort(); }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn status(
+        &self,
+        provider: SubscriptionProvider,
+    ) -> SubscriptionAccountStatus {
+        let (generation, account_id, in_memory) = {
+            let state = self.state(provider).lock().await;
+            (state.generation, state.account_id.clone(), state.access_token.is_some())
+        };
+        let signed_in = in_memory || self.read_stored(provider).await.ok().flatten().is_some();
+        let pending = self
+            .inner
+            .logins
+            .lock()
+            .map(|logins| logins.values().any(|entry| entry.provider == provider))
+            .unwrap_or(false);
+        SubscriptionAccountStatus {
+            provider,
+            state: if signed_in {
+                SubscriptionAccountState::SignedIn
+            } else if pending {
+                SubscriptionAccountState::Pending
+            } else {
+                SubscriptionAccountState::SignedOut
+            },
+            account_id,
+            generation,
+            message: None,
+        }
+    }
+
+    async fn start_grok_device_login(
+        &self,
+    ) -> Result<(SubscriptionLoginChallenge, BoxFuture<'static, Result<TokenResponse, AuthError>>), AuthError> {
+        let url = format!("{}/oauth2/device/code", self.inner.endpoints.grok_issuer);
+        let response = self
+            .inner
+            .http
+            .post(url)
+            .header("x-grok-client-version", env!("CARGO_PKG_VERSION"))
+            .header("x-grok-client-surface", "desktop")
+            .form(&[
+                ("client_id", GROK_CLIENT_ID),
+                ("scope", "openid profile email offline_access grok-cli:access api:access"),
+            ])
+            .send()
+            .await
+            .map_err(|_| AuthError::Network)?;
+        let device: GrokDeviceStart = json_response(response).await?;
+        validate_verification_url(&device.verification_uri)?;
+        let verification_url = device
+            .verification_uri_complete
+            .filter(|url| validate_verification_url(url).is_ok())
+            .unwrap_or(device.verification_uri);
+        let lifetime = Duration::from_secs(device.expires_in.unwrap_or(300).clamp(1, 900));
+        let deadline = Instant::now() + lifetime;
+        let interval = Duration::from_secs(device.interval.unwrap_or(5).clamp(1, 60));
+        let login_id = Uuid::new_v4().to_string();
+        let challenge = SubscriptionLoginChallenge {
+            kind: LoginKind::DeviceCode,
+            login_id,
+            verification_url,
+            user_code: device.user_code,
+            expires_at: epoch_millis_after(lifetime),
+        };
+        let http = self.inner.http.clone();
+        let issuer = self.inner.endpoints.grok_issuer.clone();
+        let device_code = device.device_code;
+        let future = Box::pin(async move {
+            let mut poll_interval = interval;
+            loop {
+                sleep(poll_interval).await;
+                if Instant::now() >= deadline {
+                    return Err(AuthError::Expired);
+                }
+                let response = http
+                    .post(format!("{issuer}/oauth2/token"))
+                    .form(&[
+                        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                        ("client_id", GROK_CLIENT_ID),
+                        ("device_code", device_code.as_str()),
+                    ])
+                    .send()
+                    .await
+                    .map_err(|_| AuthError::Network)?;
+                if response.status().is_success() {
+                    return response.json().await.map_err(|_| AuthError::InvalidResponse);
+                }
+                let error = oauth_error(response).await;
+                match error.as_deref() {
+                    Some("authorization_pending") => continue,
+                    Some("slow_down") => poll_interval += Duration::from_secs(5),
+                    Some("access_denied" | "authorization_denied") => return Err(AuthError::Denied),
+                    Some("expired_token") => return Err(AuthError::Expired),
+                    _ => return Err(AuthError::Network),
+                }
+            }
+        }) as BoxFuture<'static, Result<TokenResponse, AuthError>>;
+        Ok((challenge, future))
+    }
+
+    async fn start_codex_browser_login(
+        &self,
+    ) -> Result<(SubscriptionLoginChallenge, BoxFuture<'static, Result<TokenResponse, AuthError>>), AuthError> {
+        let listener = TcpListener::bind("127.0.0.1:1455")
+            .await
+            .map_err(|_| AuthError::Network)?;
+        let state = Uuid::new_v4().simple().to_string();
+        let verifier = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        let mut authorization = Url::parse(&format!("{}/oauth/authorize", self.inner.endpoints.codex_issuer))
+            .map_err(|_| AuthError::InvalidResponse)?;
+        authorization.query_pairs_mut()
+            .append_pair("response_type", "code")
+            .append_pair("client_id", CODEX_CLIENT_ID)
+            .append_pair("redirect_uri", &self.inner.endpoints.codex_callback)
+            .append_pair("scope", "openid profile email offline_access")
+            .append_pair("code_challenge", &challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("state", &state);
+        let login_id = Uuid::new_v4().to_string();
+        let result_challenge = SubscriptionLoginChallenge {
+            kind: LoginKind::BrowserPkce,
+            login_id,
+            verification_url: authorization.to_string(),
+            user_code: String::new(),
+            expires_at: epoch_millis_after(MAX_LOGIN_LIFETIME),
+        };
+        let callback_timeout = MAX_LOGIN_LIFETIME;
+        let callback = Box::pin(async move {
+            let (mut socket, _) = timeout(callback_timeout, listener.accept())
+                .await
+                .map_err(|_| AuthError::Expired)?
+                .map_err(|_| AuthError::Network)?;
+            let mut buffer = [0u8; 8192];
+            let count = timeout(Duration::from_secs(10), socket.read(&mut buffer))
+                .await
+                .map_err(|_| AuthError::Expired)?
+                .map_err(|_| AuthError::Network)?;
+            if count == 0 {
+                return Err(AuthError::InvalidResponse);
+            }
+            let request = String::from_utf8_lossy(&buffer[..count]);
+            let target = request.lines().next().and_then(|line| line.split_whitespace().nth(1))
+                .ok_or(AuthError::InvalidResponse)?;
+            let callback_url = Url::parse(&format!("http://localhost:1455{target}"))
+                .map_err(|_| AuthError::InvalidResponse)?;
+            if callback_url.path() != "/auth/callback" {
+                respond_callback(&mut socket, 404, "Sign-in callback not found.").await;
+                return Err(AuthError::InvalidResponse);
+            }
+            let params = callback_url.query_pairs().into_owned().collect::<HashMap<_, _>>();
+            if params.get("state").map(String::as_str) != Some(state.as_str()) {
+                respond_callback(&mut socket, 400, "Sign-in state did not match.").await;
+                return Err(AuthError::Denied);
+            }
+            if let Some(error) = params.get("error") {
+                respond_callback(&mut socket, 400, "Sign-in was denied.").await;
+                return Err(if error == "access_denied" { AuthError::Denied } else { AuthError::InvalidResponse });
+            }
+            let code = params.get("code").ok_or(AuthError::InvalidResponse)?.clone();
+            respond_callback(&mut socket, 200, "Sign-in complete. You can return to OpenSCAD Studio.").await;
+            Ok((code, verifier))
+        });
+        let issuer = self.inner.endpoints.codex_issuer.clone();
+        let redirect_uri = self.inner.endpoints.codex_callback.clone();
+        let http = self.inner.http.clone();
+        let future = Box::pin(async move {
+            let (code, verifier) = callback.await?;
+            let response = http.post(format!("{issuer}/oauth/token"))
+                .form(&[
+                    ("grant_type", "authorization_code"),
+                    ("client_id", CODEX_CLIENT_ID),
+                    ("code", code.as_str()),
+                    ("redirect_uri", redirect_uri.as_str()),
+                    ("code_verifier", verifier.as_str()),
+                ])
+                .send().await.map_err(|_| AuthError::Network)?;
+            json_response(response).await
+        }) as BoxFuture<'static, Result<TokenResponse, AuthError>>;
+        Ok((result_challenge, future))
+    }
+
+    async fn start_codex_device_login(
+        &self,
+    ) -> Result<(SubscriptionLoginChallenge, BoxFuture<'static, Result<TokenResponse, AuthError>>), AuthError> {
+        let issuer = self.inner.endpoints.codex_issuer.clone();
+        let response = self.inner.http.post(format!("{issuer}/api/accounts/deviceauth/usercode"))
+            .json(&serde_json::json!({"client_id": CODEX_CLIENT_ID}))
+            .send().await.map_err(|_| AuthError::Network)?;
+        let device: CodexDeviceStart = json_response(response).await?;
+        let lifetime = Duration::from_secs(device.expires_in.unwrap_or(300).clamp(1, 900));
+        let deadline = Instant::now() + lifetime;
+        let device_url = format!("{issuer}/codex/device");
+        let challenge = SubscriptionLoginChallenge {
+            kind: LoginKind::DeviceCode,
+            login_id: Uuid::new_v4().to_string(),
+            verification_url: device_url,
+            user_code: device.user_code.clone(),
+            expires_at: epoch_millis_after(lifetime),
+        };
+        let http = self.inner.http.clone();
+        let device_auth_id = device.device_auth_id;
+        let user_code = device.user_code;
+        let interval = Duration::from_secs(device.interval.unwrap_or(5).clamp(1, 30));
+        let future = Box::pin(async move {
+            loop {
+                sleep(interval).await;
+                if Instant::now() >= deadline { return Err(AuthError::Expired); }
+                let response = http.post(format!("{issuer}/api/accounts/deviceauth/token"))
+                    .json(&serde_json::json!({"device_auth_id": device_auth_id, "user_code": user_code}))
+                    .send().await.map_err(|_| AuthError::Network)?;
+                if response.status() == StatusCode::FORBIDDEN || response.status() == StatusCode::NOT_FOUND {
+                    continue;
+                }
+                let poll: CodexDevicePoll = json_response(response).await?;
+                let code = poll.authorization_code.ok_or(AuthError::InvalidResponse)?;
+                let verifier = poll.code_verifier.ok_or(AuthError::InvalidResponse)?;
+                let token_response = http.post(format!("{issuer}/oauth/token"))
+                    .form(&[
+                        ("grant_type", "authorization_code"),
+                        ("client_id", CODEX_CLIENT_ID),
+                        ("code", code.as_str()),
+                        ("redirect_uri", "https://auth.openai.com/deviceauth/callback"),
+                        ("code_verifier", verifier.as_str()),
+                    ])
+                    .send().await.map_err(|_| AuthError::Network)?;
+                return json_response(token_response).await;
+            }
+        }) as BoxFuture<'static, Result<TokenResponse, AuthError>>;
+        Ok((challenge, future))
+    }
+
+    async fn install_tokens(&self, provider: SubscriptionProvider, expected_generation: u64, tokens: TokenResponse) -> Result<(), AuthError> {
+        if tokens.access_token.is_empty() { return Err(AuthError::InvalidResponse); }
+        let refresh_token = tokens.refresh_token.filter(|value| !value.is_empty()).ok_or(AuthError::InvalidResponse)?;
+        let account_id = token_account_id(&tokens);
+        let encoded = serde_json::to_string(&StoredCredential { refresh_token, account_id: account_id.clone() })
+            .map_err(|_| AuthError::InvalidResponse)?;
+        let mut state = self.state(provider).lock().await;
+        if state.generation != expected_generation { return Err(AuthError::Cancelled); }
+        self.write_stored(provider, encoded).await?;
+        state.generation = state.generation.wrapping_add(1);
+        state.access_token = Some(tokens.access_token);
+        state.account_id = account_id;
+        state.access_expires_at = Some(Instant::now() + Duration::from_secs(tokens.expires_in.unwrap_or(3600).saturating_sub(30)));
+        Ok(())
+    }
+
+    async fn read_stored(&self, provider: SubscriptionProvider) -> Result<Option<StoredCredential>, AuthError> {
+        let store = self.inner.store.clone();
+        let value = tokio::task::spawn_blocking(move || store.read(provider))
+            .await.map_err(|_| AuthError::StorageUnavailable)?
+            .map_err(|_| AuthError::StorageUnavailable)?;
+        value.map(|value| serde_json::from_str(&value).map_err(|_| AuthError::StorageUnavailable)).transpose()
+    }
+
+    async fn write_stored(&self, provider: SubscriptionProvider, value: String) -> Result<(), AuthError> {
+        let store = self.inner.store.clone();
+        tokio::task::spawn_blocking(move || store.write(provider, &value))
+            .await.map_err(|_| AuthError::StorageUnavailable)?
+            .map_err(|_| AuthError::StorageUnavailable)
+    }
+
+    async fn delete_stored(&self, provider: SubscriptionProvider) -> Result<(), AuthError> {
+        let store = self.inner.store.clone();
+        tokio::task::spawn_blocking(move || store.delete(provider))
+            .await.map_err(|_| AuthError::StorageUnavailable)?
+            .map_err(|_| AuthError::StorageUnavailable)
+    }
+
+    async fn refresh_locked(
+        &self,
+        provider: SubscriptionProvider,
+        expected_generation: u64,
+        used_access_token: Option<&str>,
+    ) -> Result<AuthorizedSession, SessionError> {
+        let _refresh = self.inner.refresh_locks[provider_index(provider)].lock().await;
+        let (generation, existing_access, existing_expiry) = {
+            let state = self.state(provider).lock().await;
+            if state.generation != expected_generation { return Err(SessionError::StaleGeneration); }
+            (state.generation, state.access_token.clone(), state.access_expires_at)
+        };
+        if let (Some(access), Some(expiry)) = (&existing_access, existing_expiry) {
+            let still_valid = expiry > Instant::now();
+            let different_from_used = used_access_token.map(|used| used != access).unwrap_or(false);
+            if still_valid && (used_access_token.is_none() || different_from_used) {
+                let state = self.state(provider).lock().await;
+                if state.generation != generation { return Err(SessionError::StaleGeneration); }
+                return Ok(session_from_state(&state)?);
+            }
+        }
+        let stored = self.read_stored(provider).await.map_err(|_| SessionError::StorageUnavailable)?
+            .ok_or(SessionError::SignedOut)?;
+        let refreshed = self.exchange_refresh(provider, &stored.refresh_token).await
+            .map_err(|_| SessionError::RefreshRejected)?;
+        let refresh_token = refreshed.refresh_token.clone().unwrap_or(stored.refresh_token);
+        let account_id = token_account_id(&refreshed).or(stored.account_id);
+        let encoded = serde_json::to_string(&StoredCredential { refresh_token, account_id: account_id.clone() })
+            .map_err(|_| SessionError::StorageUnavailable)?;
+        let mut state = self.state(provider).lock().await;
+        if state.generation != expected_generation { return Err(SessionError::StaleGeneration); }
+        self.write_stored(provider, encoded).await.map_err(|_| SessionError::StorageUnavailable)?;
+        state.access_token = Some(refreshed.access_token);
+        state.account_id = account_id;
+        state.access_expires_at = Some(Instant::now() + Duration::from_secs(refreshed.expires_in.unwrap_or(3600).saturating_sub(30)));
+        session_from_state(&state)
+    }
+
+    async fn exchange_refresh(&self, provider: SubscriptionProvider, refresh_token: &str) -> Result<TokenResponse, AuthError> {
+        let (url, client_id) = match provider {
+            SubscriptionProvider::CodexSubscription => (format!("{}/oauth/token", self.inner.endpoints.codex_issuer), CODEX_CLIENT_ID),
+            SubscriptionProvider::GrokSubscription => (format!("{}/oauth2/token", self.inner.endpoints.grok_issuer), GROK_CLIENT_ID),
+        };
+        let response = self.inner.http.post(url)
+            .form(&[("grant_type", "refresh_token"), ("client_id", client_id), ("refresh_token", refresh_token)])
+            .send().await.map_err(|_| AuthError::Network)?;
+        json_response(response).await
+    }
+}
+
+impl SubscriptionSessions for NativeSubscriptionAuth {
+    fn authorized(&self, provider: SubscriptionProvider, expected_generation: u64) -> impl Future<Output = Result<AuthorizedSession, SessionError>> + Send {
+        self.refresh_locked(provider, expected_generation, None)
+    }
+
+    fn refresh_after_unauthorized(&self, provider: SubscriptionProvider, expected_generation: u64, used_access_token: &str) -> impl Future<Output = Result<AuthorizedSession, SessionError>> + Send {
+        self.refresh_locked(provider, expected_generation, Some(used_access_token))
+    }
+
+    fn generation(&self, provider: SubscriptionProvider) -> impl Future<Output = u64> + Send {
+        async move { self.state(provider).lock().await.generation }
+    }
+
+    fn sign_out(&self, provider: SubscriptionProvider) -> impl Future<Output = Result<u64, SessionError>> + Send {
+        async move {
+            let generation = {
+                let mut state = self.state(provider).lock().await;
+                state.generation = state.generation.wrapping_add(1);
+                state.access_token = None;
+                state.account_id = None;
+                state.access_expires_at = None;
+                state.generation
+            };
+            self.delete_stored(provider).await.map_err(|_| SessionError::StorageUnavailable)?;
+            let mut logins = self.inner.logins.lock().map_err(|_| SessionError::StorageUnavailable)?;
+            let ids = logins.iter().filter_map(|(id, pending)| (pending.provider == provider).then_some(id.clone())).collect::<Vec<_>>();
+            for id in ids {
+                if let Some(pending) = logins.remove(&id) {
+                    pending.cancellation.cancel();
+                    if let Some(task) = pending.task { task.abort(); }
+                }
+            }
+            Ok(generation)
+        }
+    }
+}
+
+fn provider_index(provider: SubscriptionProvider) -> usize {
+    match provider { SubscriptionProvider::CodexSubscription => 0, SubscriptionProvider::GrokSubscription => 1 }
+}
+
+fn session_from_state(state: &SessionState) -> Result<AuthorizedSession, SessionError> {
+    let access_token = state.access_token.clone().ok_or(SessionError::SignedOut)?;
+    Ok(AuthorizedSession {
+        access_token,
+        account_id: state.account_id.clone(),
+        generation: state.generation,
+    })
+}
+
+async fn json_response<T: for<'de> Deserialize<'de>>(response: Response) -> Result<T, AuthError> {
+    if !response.status().is_success() {
+        let _ = oauth_error(response).await;
+        return Err(AuthError::Network);
+    }
+    response.json().await.map_err(|_| AuthError::InvalidResponse)
+}
+
+async fn oauth_error(response: Response) -> Option<String> {
+    response.json::<OAuthError>().await.ok().and_then(|error| error.error)
+}
+
+fn validate_verification_url(value: &str) -> Result<(), AuthError> {
+    let url = Url::parse(value).map_err(|_| AuthError::InvalidResponse)?;
+    if url.scheme() == "https" && matches!(url.host_str(), Some("auth.x.ai" | "accounts.x.ai" | "auth.openai.com" | "chatgpt.com")) {
+        Ok(())
+    } else {
+        Err(AuthError::InvalidResponse)
+    }
+}
+
+async fn respond_callback(socket: &mut tokio::net::TcpStream, status: u16, message: &str) {
+    let body = format!("<!doctype html><title>OpenSCAD Studio</title><p>{message}</p>");
+    let response = format!("HTTP/1.1 {status} OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    let _ = socket.write_all(response.as_bytes()).await;
+}
+
+fn token_account_id(tokens: &TokenResponse) -> Option<String> {
+    let id_token = tokens.id_token.as_deref().unwrap_or(&tokens.access_token);
+    let payload = id_token.split('.').nth(1)?;
+    let json = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&json).ok()?;
+    claims.get("https://api.openai.com/auth")
+        .and_then(|auth| auth.get("chatgpt_account_id"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| claims.get("sub").and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+}
+
+fn epoch_millis_after(duration: Duration) -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default()
+        .saturating_add(duration).as_millis().min(u64::MAX as u128) as u64
+}
