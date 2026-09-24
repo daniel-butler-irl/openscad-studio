@@ -5,7 +5,8 @@ import { AiComposer } from './AiComposer';
 import { ModelSelector } from './ModelSelector';
 import { TbFileText, TbFolder, TbFolderOpen } from 'react-icons/tb';
 import { getPlatform } from '../platform';
-import { useHasApiKey, type AiProvider } from '../stores/apiKeyStore';
+import { useHasApiKey } from '../stores/apiKeyStore';
+import type { AiConnectionProvider } from '../platform/types';
 import type { AiDraft, AttachmentStore } from '../types/aiChat';
 import {
   loadRecentFiles,
@@ -35,13 +36,13 @@ interface WelcomeScreenProps {
   onOpenFolder?: () => void;
   onOpenSettings?: () => void;
   showRecentFiles?: boolean;
-  currentProvider?: AiProvider;
+  currentProvider?: AiConnectionProvider;
   currentModel?: string;
-  availableProviders?: AiProvider[];
+  availableProviders?: AiConnectionProvider[];
   onModelChange?: (
     model: string,
     sourceSurface?: ModelSelectionSurface,
-    provider?: AiProvider
+    provider?: AiConnectionProvider
   ) => void;
   /** Resolved default project directory path (null on web → hidden) */
   projectDirectory?: string | null;
@@ -88,6 +89,11 @@ export function WelcomeScreen({
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
   const [recentFilesReady, setRecentFilesReady] = useState(!showRecentFiles);
   const hasApiKey = useHasApiKey();
+  const hasAiConnection =
+    hasApiKey ||
+    availableProviders.some(
+      (provider) => provider === 'codex-subscription' || provider === 'grok-subscription'
+    );
 
   // Shorten home directory to ~/ for display
   const displayPath = useMemo(() => {
@@ -164,7 +170,7 @@ export function WelcomeScreen({
           What do you want to create?
         </Text>
 
-        {hasApiKey ? (
+        {hasAiConnection ? (
           <div data-testid="welcome-ai-entry" className="space-y-6 ph-no-capture">
             <div>
               <AiComposer
@@ -237,11 +243,13 @@ export function WelcomeScreen({
                     key={example}
                     variant="secondary"
                     onClick={() => {
-                      if (!hasApiKey) return;
+                      if (!hasAiConnection) return;
                       onStartWithDraft({ text: example, attachmentIds: [] });
                     }}
-                    disabled={!hasApiKey}
-                    title={!hasApiKey ? 'Configure an AI provider in Settings to use AI' : example}
+                    disabled={!hasAiConnection}
+                    title={
+                      !hasAiConnection ? 'Configure an AI provider in Settings to use AI' : example
+                    }
                   >
                     {example}
                   </Button>
@@ -249,7 +257,7 @@ export function WelcomeScreen({
               </div>
             </div>
           </div>
-        ) : hasApiKey === false ? (
+        ) : !hasAiConnection ? (
           <div
             className="rounded-lg p-4 text-center"
             style={{

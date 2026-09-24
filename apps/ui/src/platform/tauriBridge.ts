@@ -4,7 +4,13 @@ import type {
   FileOpenResult,
   FileFilter,
   ConfirmDialogOptions,
+  SubscriptionBridge,
+  SubscriptionAccountStatus,
+  SubscriptionLoginStart,
+  SubscriptionModelInfo,
+  SubscriptionStreamEvent,
 } from './types';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import { eventBus } from './eventBus';
 import {
   OPENSCAD_PROJECT_FILE_EXTENSIONS,
@@ -17,10 +23,43 @@ const capabilities: PlatformCapabilities = {
   hasNativeMenu: true,
   hasFileSystem: true,
   canSetWindowTitle: true,
+  hasSubscriptionAuth: true,
 };
 
 export class TauriBridge implements PlatformBridge {
   readonly capabilities = capabilities;
+  readonly subscriptions: SubscriptionBridge = {
+    getStatus: (provider) =>
+      invoke<SubscriptionAccountStatus>('subscription_get_status', { provider }),
+    startLogin: (provider) =>
+      invoke<SubscriptionLoginStart>('subscription_start_login', { provider }),
+    cancelLogin: (provider, loginId) =>
+      invoke<void>('subscription_cancel_login', { provider, loginId }),
+    signOut: async (provider) => {
+      await invoke<number>('subscription_sign_out', { provider });
+    },
+    listModels: (provider, accountGeneration) =>
+      invoke<SubscriptionModelInfo[]>('subscription_list_models', { provider, accountGeneration }),
+    startRequest: async (request, onEvent) => {
+      const channel = new Channel<SubscriptionStreamEvent>();
+      channel.onmessage = (event) => {
+        try {
+          onEvent(event);
+        } finally {
+          if (event.kind === 'complete' || event.kind === 'error') {
+            channel.onmessage = () => {};
+          }
+        }
+      };
+      try {
+        await invoke<void>('subscription_start_request', { request, onEvent: channel });
+      } catch (error) {
+        channel.onmessage = () => {};
+        throw error;
+      }
+    },
+    cancelRequest: (requestId) => invoke<void>('subscription_cancel_request', { requestId }),
+  };
 
   async fileOpen(filters?: FileFilter[]): Promise<FileOpenResult | null> {
     const { open } = await import('@tauri-apps/plugin-dialog');

@@ -56,6 +56,7 @@ import { isShareEnabled } from './services/shareService';
 import { openFileInWindow, openWorkspaceFolderInWindow } from './services/windowOpenService';
 import { useSettings, loadSettings, updateSetting } from './stores/settingsStore';
 import { getApiKey, getOpenAiCompatibleConfig } from './stores/apiKeyStore';
+import { getSubscriptionSnapshot } from './stores/subscriptionStore';
 import {
   selectActiveRender,
   selectActiveTab,
@@ -1488,7 +1489,9 @@ function App() {
   const hasCurrentModelApiKey =
     currentProvider === 'openai-compatible'
       ? Boolean(getOpenAiCompatibleConfig().baseUrl && currentModel.trim())
-      : Boolean(getApiKey(currentProvider));
+      : currentProvider === 'codex-subscription' || currentProvider === 'grok-subscription'
+        ? getSubscriptionSnapshot().status[currentProvider].state === 'signed-in'
+        : Boolean(getApiKey(currentProvider));
   const canAttachViewerAnnotation = !isStreaming && !isProcessingAttachments;
 
   const attachViewerAnnotationFile = useCallback<WorkspaceState['attachViewerAnnotationFile']>(

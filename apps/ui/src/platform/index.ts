@@ -32,12 +32,14 @@ function createBootstrapCapabilities(): PlatformCapabilities {
         hasNativeMenu: true,
         hasFileSystem: true,
         canSetWindowTitle: true,
+        hasSubscriptionAuth: false,
       }
     : {
         multiFile: true,
         hasNativeMenu: false,
         hasFileSystem: false,
         canSetWindowTitle: true,
+        hasSubscriptionAuth: false,
       };
 }
 

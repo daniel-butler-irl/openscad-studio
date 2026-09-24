@@ -40,6 +40,7 @@ const capabilities: PlatformCapabilities = {
   hasNativeMenu: false,
   hasFileSystem: false,
   canSetWindowTitle: true,
+  hasSubscriptionAuth: false,
 };
 
 function filtersToAccept(filters?: FileFilter[]): string {

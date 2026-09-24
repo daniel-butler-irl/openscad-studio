@@ -63,18 +63,22 @@ openscad-studio/
 │   │   │   │   ├── types.ts        # PlatformBridge interface
 │   │   │   │   ├── tauriBridge.ts  # Desktop shell/file bridge
 │   │   │   │   └── webBridge.ts    # Web (localStorage, fetch)
+│   │   │   ├── stores/             # Provider and project state
+│   │   │   │   └── subscriptionStore.ts # Desktop account status and model catalogs
 │   │   │   ├── services/           # Core services
 │   │   │   │   ├── aiService.ts    # AI agent (Vercel AI SDK)
+│   │   │   │   ├── subscriptionFetch.ts # Native subscription stream adapter
 │   │   │   │   ├── renderService.ts # Render orchestration
 │   │   │   │   ├── nativeRenderService.ts # Native OpenSCAD binary IPC (desktop)
 │   │   │   │   └── openscad-worker.ts # OpenSCAD WASM Web Worker
-│   │   │   ├── stores/             # Zustand stores
-│   │   │   │   └── projectStore.ts # Multi-file project state
+│   │   │   ├── stores/             # Provider and project state
+│   │   │   │   └── projectStore.ts # Multi-file project state (Zustand)
 │   │   │   ├── themes/             # Theme definitions
 │   │   │   └── utils/              # Utility functions
 │   │   └── src-tauri/              # Rust backend (desktop only)
 │   │       ├── src/
 │   │       │   ├── cmd/            # Tauri commands (file I/O, window mgmt)
+│   │       │   ├── subscriptions/  # Native OAuth and fixed-origin model transport
 │   │       │   └── lib.rs          # App initialization
 │   │       └── Cargo.toml
 │   └── web/                        # Web app entry point
@@ -103,6 +107,10 @@ React Frontend (TypeScript)
     ↓
 Vercel AI SDK → Anthropic/OpenAI API (HTTPS)
 
+Desktop subscription path:
+Vercel AI SDK → subscription fetch adapter → Tauri Channel → fixed-origin Rust transport
+                                         └→ native OAuth/keychain; no token is exposed to React
+
 Desktop-only external agent path:
 Local MCP client → Tauri MCP server (`mcp.rs`) → active workspace window bridge
 ```
@@ -117,7 +125,7 @@ Local MCP client → Tauri MCP server (`mcp.rs`) → active workspace window bri
    - Interactive STL/3D mesh for manipulation
    - SVG for 2D designs
 
-4. **Shared Client-Side AI**: Both web and desktop use the same frontend AI stack for the in-app copilot. Requests are made directly from the React app with Vercel AI SDK's `streamText`; hosted API keys and OpenAI-compatible local provider settings are stored in localStorage-backed state inside the browser/webview.
+4. **Shared AI conversation**: Web and desktop use the same React/Vercel AI SDK agent, tools, edit validation, and checkpoints. Anthropic/OpenAI API-key and OpenAI-compatible requests use the frontend transport. Desktop Codex/Grok subscription requests use a fetch-compatible adapter backed by fixed-origin Rust transport; OAuth refresh credentials use the OS credential manager and tokens stay native-only. Web does not expose subscription sign-in.
 
 5. **Diff-based AI Editing**: AI returns exact string replacements, not full file rewrites.
 
@@ -146,10 +154,13 @@ Local MCP client → Tauri MCP server (`mcp.rs`) → active workspace window bri
 - **`apps/ui/src/platform/types.ts`**: `PlatformBridge` interface — defines all platform-dependent operations.
 - **`apps/ui/src/platform/tauriBridge.ts`**: Desktop implementation for native file dialogs, directory access, and menu events.
 - **`apps/ui/src/platform/webBridge.ts`**: Web implementation using localStorage, File System Access API, fetch.
+- **`apps/ui/src/stores/subscriptionStore.ts`**: Desktop subscription status, pending login, catalog, and model readiness state.
+- **`apps/ui/src/components/settings/SubscriptionSettings.tsx`**: Desktop sign-in and disconnect controls in AI Settings.
 
 ### Services
 
 - **`apps/ui/src/services/aiService.ts`**: AI agent using Vercel AI SDK (`streamText`). Handles streaming, tool calls, multi-turn conversations.
+- **`apps/ui/src/services/subscriptionFetch.ts`**: Fetch-compatible SDK adapter for ordered native subscription response streams.
 - **`apps/ui/src/services/desktopMcp.ts`**: Desktop MCP bridge. Connects the Tauri localhost MCP server to the active workspace window and implements external-agent render, screenshot, diagnostics, and export handlers.
 - **`apps/ui/src/services/renderService.ts`**: Render orchestration — manages Web Worker communication, caching, diagnostics.
 - **`apps/ui/src/services/openscad-worker.ts`**: Web Worker that loads openscad-wasm and handles render requests off the main thread.
@@ -167,6 +178,8 @@ Local MCP client → Tauri MCP server (`mcp.rs`) → active workspace window bri
 - **`apps/ui/src-tauri/src/lib.rs`**: Tauri app initialization, command registration.
 - **`apps/ui/src-tauri/src/cmd/render.rs`**: Native render workspace management, binary invocation, and output collection.
 - **`apps/ui/src-tauri/src/mcp.rs`**: Desktop localhost MCP server, session/window binding, and request routing for external agents.
+- **`apps/ui/src-tauri/src/subscriptions/auth.rs`**: Native OAuth flows and OS credential-manager session lifecycle.
+- **`apps/ui/src-tauri/src/subscriptions/transport.rs`**: Fixed-origin subscription catalogs and window-scoped streaming requests.
 
 ## Development Workflow
 
@@ -281,6 +294,7 @@ pnpm validate:changes   # Run the shared validation helper
 
 - **PlatformBridge**: Components should use the `PlatformBridge` interface (`apps/ui/src/platform/types.ts`), never import Tauri or web APIs directly.
 - **API keys and local provider settings**: Hosted API keys are stored client-side in obfuscated localStorage-backed state today, including in the Tauri webview. OpenAI-compatible base URLs, model ids, and optional local provider keys are also stored locally. This is a convenience tradeoff, not hardened secret isolation.
+- **Subscription credentials**: Codex and Grok refresh credentials stay in the desktop OS credential manager. Access tokens, provider authorization headers, and raw provider errors never cross the Tauri command/channel boundary. Native provider URLs and protocol backends are allowlisted; request events are scoped by window and account generation. This is separate from CLI authentication and never imports CLI tokens.
 - **File I/O**: Desktop uses native file dialogs via Tauri. Web uses File System Access API with fallbacks.
 
 ### WASM Rendering (Web)
@@ -324,7 +338,7 @@ pnpm validate:changes   # Run the shared validation helper
 ✅ Export to STL, OBJ, AMF, 3MF, PNG, SVG, DXF
 ✅ Content-hash caching
 ✅ 2D mode with SVG viewer
-✅ AI copilot with Vercel AI SDK (streaming, tool calls, Anthropic/OpenAI/OpenAI-compatible providers)
+✅ AI copilot with Vercel AI SDK (streaming, tool calls, Anthropic/OpenAI/OpenAI-compatible providers, desktop Codex/Grok subscriptions)
 ✅ Diff-based code editing
 ✅ Tool call visualization
 ✅ Multi-turn AI chat with draft and attachment state

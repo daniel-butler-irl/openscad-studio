@@ -48,6 +48,7 @@ OpenSCAD Studio is a professional editor for OpenSCAD — the programmable solid
 ### AI Copilot
 
 - **In-app chat** — Stream responses from Claude, GPT, or local OpenAI-compatible models such as Ollama, llama.cpp, and LM Studio to generate, explain, and fix OpenSCAD code
+- **Desktop subscription sign-in** — Connect Codex/ChatGPT or Grok accounts in AI Settings; API-key and local-provider options remain available on web and desktop
 - **MCP support (desktop)** — Exposes a localhost MCP server so external agents like [Claude Code](https://claude.ai/code) can render models, read diagnostics, capture screenshots, and edit files in your active workspace
 
 ### Platform

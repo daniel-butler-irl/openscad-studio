@@ -27,6 +27,7 @@ import {
 } from './SettingsPrimitives';
 import { ApiProviderCard } from './ApiProviderCard';
 import { ExternalAgentsCard } from './ExternalAgentsCard';
+import { SubscriptionSettings } from './SubscriptionSettings';
 
 const MASKED_KEY = '••••••••••••••••••••••••••••••••••••••••••••';
 
@@ -261,9 +262,13 @@ export const AiSettings = forwardRef<AiSettingsHandle, AiSettingsProps>(
     return (
       <div className="flex flex-col ph-no-capture" style={{ gap: 'var(--space-section-gap)' }}>
         <Text variant="body" color="secondary">
-          Connect hosted API keys or a local OpenAI-compatible server, then choose the model from
-          the chat composer.
+          Connect an API key, local OpenAI-compatible server, or desktop subscription account, then
+          choose a model from the chat composer.
         </Text>
+
+        {getPlatform().capabilities.hasSubscriptionAuth && getPlatform().subscriptions ? (
+          <SubscriptionSettings isOpen={isOpen} />
+        ) : null}
 
         <ApiProviderCard
           title="Anthropic API Key"
