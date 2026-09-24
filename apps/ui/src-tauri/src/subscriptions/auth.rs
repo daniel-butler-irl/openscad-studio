@@ -1264,7 +1264,10 @@ mod tests {
             format!("GET {target} HTTP/1.1\r\nHost: localhost:{port}\r\nConnection: close\r\n\r\n");
         stream.write_all(request.as_bytes()).await.unwrap();
         let mut response = vec![0; 1024];
-        let count = stream.read(&mut response).await.unwrap();
+        let count = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut response))
+            .await
+            .expect("callback server should respond")
+            .unwrap();
         String::from_utf8_lossy(&response[..count]).into_owned()
     }
 
@@ -1522,17 +1525,30 @@ mod tests {
             .endpoints
             .codex_callback = format!("http://localhost:{port}/auth/callback");
         let (challenge, callback) = auth.start_codex_browser_login().await.unwrap();
+        let callback = tokio::spawn(callback);
         let authorize = Url::parse(&challenge.verification_url).unwrap();
         let state = authorize
             .query_pairs()
             .find_map(|(key, value)| (key == "state").then(|| value.into_owned()))
             .unwrap();
-        let wrong_response = send_callback(port, "/auth/callback?code=bad&state=wrong-state").await;
+        let wrong_response = tokio::time::timeout(
+            Duration::from_secs(2),
+            send_callback(port, "/auth/callback?code=bad&state=wrong-state"),
+        )
+        .await
+        .expect("wrong-state callback should receive a response");
         assert!(wrong_response.starts_with("HTTP/1.1 400"));
         let target = format!("/auth/callback?error=access_denied&state={state}");
-        let denial_response = send_callback(port, &target).await;
+        let denial_response =
+            tokio::time::timeout(Duration::from_secs(2), send_callback(port, &target))
+                .await
+                .expect("denial callback should receive a response");
         assert!(denial_response.starts_with("HTTP/1.1 400"));
-        assert!(matches!(callback.await, Err(AuthError::Denied)));
+        let callback_result = tokio::time::timeout(Duration::from_secs(2), callback)
+            .await
+            .expect("callback task should finish")
+            .unwrap();
+        assert!(matches!(callback_result, Err(AuthError::Denied)));
     }
 
     #[tokio::test]
